@@ -1,0 +1,2230 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using uLink;
+using UnityEngine;
+
+// Token: 0x02000559 RID: 1369
+public class LocalDamageDisplay : IDLocalCharacterAddon
+{
+	// Token: 0x06002D91 RID: 11665 RVA: 0x00023BC4 File Offset: 0x00021DC4
+	public LocalDamageDisplay() : this(IDLocalCharacterAddon.AddonFlags.FireOnAddonAwake)
+	{
+	}
+
+	// Token: 0x06002D92 RID: 11666 RVA: 0x000BD9B8 File Offset: 0x000BBBB8
+	protected LocalDamageDisplay(IDLocalCharacterAddon.AddonFlags addonFlags) : base(addonFlags | IDLocalCharacterAddon.AddonFlags.FireOnAddonAwake)
+	{
+		this.zoomFOV = 30f;
+		this.normalFOV = 90f;
+		this.updateInterval = 0.5f;
+		this.visibilityCheckInterval = 0.1f;
+		this.fpsUpdateInterval = 0.5f;
+		this.lastHealthPercent = 1f;
+		this.aimKey = LocalDamageDisplay.LockButtonType.RightClick;
+		this.purItems = new List<ItemPickup>();
+		this.cachedScreenPositions = new Dictionary<Character, Vector2>();
+		this.visibilityCache = new Dictionary<Character, float>();
+		this.purObjectsLootables = new List<LootableObject>();
+		this.purObjectsSleepers = new List<SleepingAvatar>();
+		this.purObjects = new List<Character>();
+		this.purObjectsResources = new List<ResourceObject>();
+		this.purStructures = new List<StructureComponent>();
+		this.hiddenStructures = new List<StructureComponent>();
+		this.hiddenLootables = new List<LootableObject>();
+		this.originalShaders = new Dictionary<StructureComponent, Shader>();
+		this.originalLootableShaders = new Dictionary<LootableObject, Shader>();
+		this.originalCharacterShaders = new Dictionary<Character, Shader>();
+		this.menuRect = new Rect(50f, 50f, 300f, 400f);
+		this.espMenuRect = new Rect(360f, 50f, 200f, 250f);
+		this.wallHackSettingsRect = new Rect(360f, 50f, 200f, 200f);
+		this.aimbotSettingsRect = new Rect(360f, 50f, 200f, 400f);
+		this.scrollPosition = Vector2.zero;
+		this.consoleError = (ConsoleWindow.singleton == null);
+		this.friendList = new List<string>();
+		LocalDamageDisplay.wallHackMode = false;
+		LocalDamageDisplay.noClipMode = false;
+		this.characterController = null;
+		this.wallHackError = false;
+		this.drawWallHackSettingsTab = false;
+		this.drawAimbotSettingsTab = false;
+		this.lastChamsPlayers = false;
+		this.lastChamsNPCs = false;
+		this.lastChamsMode = false;
+		this.lastWallHackMode = false;
+		this.lastHideWalls = false;
+		this.lastHideDoors = false;
+		this.lastHideCeilings = false;
+		this.lastHideFoundations = false;
+		this.lastRaidESPMode = false;
+		this.needsChamsUpdate = true;
+		this.heliosBoxPos = Vector2.zero;
+		this.lastPressedKey = 0;
+		this.aimBone = LocalDamageDisplay.AimBoneType.Head;
+		LocalDamageDisplay.chamsMode = false;
+		LocalDamageDisplay.chamsPlayers = false;
+	}
+
+	// Token: 0x06002D93 RID: 11667 RVA: 0x000BDC04 File Offset: 0x000BBE04
+	private void Update()
+	{
+		if (Input.GetKeyDown(110))
+		{
+			LocalDamageDisplay.noClipMode = !LocalDamageDisplay.noClipMode;
+			if (this.characterController != null)
+			{
+				this.characterController.enabled = !LocalDamageDisplay.noClipMode;
+			}
+			Debug.Log(LocalDamageDisplay.noClipMode ? "NoClip Enabled" : "NoClip Disabled");
+		}
+		if (LocalDamageDisplay.noClipMode && this.characterController != null)
+		{
+			this.NoClip();
+		}
+		else if (this.characterController != null && !LocalDamageDisplay.noClipMode && !this.characterController.enabled)
+		{
+			this.characterController.enabled = true;
+			Debug.Log("CharacterController re-enabled after NoClip");
+		}
+		if (Input.GetKeyDown(286))
+		{
+			LocalDamageDisplay.hackMenu = !LocalDamageDisplay.hackMenu;
+			Debug.Log(LocalDamageDisplay.hackMenu ? "Hack menu shown" : "Hack menu hidden");
+		}
+		if (this.fallDamageComponent != null)
+		{
+			this.fallDamageComponent.enabled = LocalDamageDisplay.fallDamage;
+			this.fallDamageError = false;
+		}
+		else
+		{
+			this.fallDamageError = true;
+		}
+		if (LocalDamageDisplay.aimbotMode && (LocalDamageDisplay.aimPlayers || LocalDamageDisplay.aimNPCs))
+		{
+			this.heliosBoxPos = Vector2.zero;
+			if (LocalDamageDisplay.setAimKey && (Input.GetKey(LocalDamageDisplay.aimKeyCode) || LocalDamageDisplay.autoAim))
+			{
+				if (this.currentTarget == null || !this.IsValidTarget(this.currentTarget) || Time.time - this.lastTargetSwitchTime > this.targetSwitchCooldown)
+				{
+					this.currentTarget = this.FindBestTarget();
+					if (this.currentTarget != null)
+					{
+						this.lastTargetSwitchTime = Time.time;
+					}
+				}
+				if (this.currentTarget != null)
+				{
+					if (this.instantAimMode)
+					{
+						this.InstantAim(this.currentTarget);
+					}
+					else
+					{
+						this.SmoothAim(this.currentTarget);
+					}
+				}
+			}
+			else
+			{
+				this.currentTarget = null;
+				this.isTargetLocked = false;
+			}
+		}
+		if (this.isTargetLocked && this.component != null)
+		{
+			Vector3 eulerAngles = this.component.transform.rotation.eulerAngles;
+			Vector3 eulerAngles2 = this.lockedRotation.eulerAngles;
+			this.component.transform.rotation = Quaternion.Euler(eulerAngles2.x, eulerAngles.y, eulerAngles.z);
+		}
+		if (LocalDamageDisplay.daytimeMode)
+		{
+			this.UpdateDaytime();
+		}
+		if (LocalDamageDisplay.autoLoot && this.component != null)
+		{
+			foreach (ItemPickup itemPickup in this.purItems)
+			{
+				if (itemPickup != null && Vector3.Distance(this.component.transform.position, itemPickup.transform.position) <= LocalDamageDisplay.autoLootRange)
+				{
+					itemPickup.gameObject.SetActive(false);
+					Debug.Log("Auto Looted: " + itemPickup.name);
+				}
+			}
+		}
+		if (LocalDamageDisplay.wallHackMode != this.lastWallHackMode || LocalDamageDisplay.raidESPMode != this.lastRaidESPMode || LocalDamageDisplay.hideWalls != this.lastHideWalls || LocalDamageDisplay.hideDoors != this.lastHideDoors || LocalDamageDisplay.hideCeilings != this.lastHideCeilings || LocalDamageDisplay.hideFoundations != this.lastHideFoundations)
+		{
+			this.WallHack();
+			this.lastWallHackMode = LocalDamageDisplay.wallHackMode;
+			this.lastRaidESPMode = LocalDamageDisplay.raidESPMode;
+			this.lastHideWalls = LocalDamageDisplay.hideWalls;
+			this.lastHideDoors = LocalDamageDisplay.hideDoors;
+			this.lastHideCeilings = LocalDamageDisplay.hideCeilings;
+			this.lastHideFoundations = LocalDamageDisplay.hideFoundations;
+		}
+		if (LocalDamageDisplay.chamsMode != this.lastChamsMode || LocalDamageDisplay.chamsPlayers != this.lastChamsPlayers || LocalDamageDisplay.chamsNPCs != this.lastChamsNPCs)
+		{
+			this.needsChamsUpdate = true;
+			this.lastChamsMode = LocalDamageDisplay.chamsMode;
+			this.lastChamsPlayers = LocalDamageDisplay.chamsPlayers;
+			this.lastChamsNPCs = LocalDamageDisplay.chamsNPCs;
+		}
+		if (this.needsChamsUpdate)
+		{
+			this.ApplyChams();
+			this.needsChamsUpdate = false;
+		}
+		this.NoRecoil();
+		this.NoReload();
+		this.AutoGather();
+	}
+
+	// Token: 0x06002D94 RID: 11668 RVA: 0x00023BCD File Offset: 0x00021DCD
+	public void SetNewHealthPercent(float newHealthPercent, GameObject attacker)
+	{
+		if (newHealthPercent < this.lastHealthPercent)
+		{
+			if (!LocalDamageDisplay.fallDamage && attacker == null)
+			{
+				return;
+			}
+			this.Hurt(newHealthPercent, attacker);
+		}
+		this.lastHealthPercent = newHealthPercent;
+	}
+
+	// Token: 0x06002D95 RID: 11669 RVA: 0x000BE01C File Offset: 0x000BC21C
+	public void Hurt(float percent, GameObject attacker)
+	{
+		if (percent < 0.05f || (!LocalDamageDisplay.fallDamage && attacker == null && this.fallDamageComponent == null))
+		{
+			return;
+		}
+		this.lastTakeDamageTime = Time.time;
+		if (CameraMount.current == null)
+		{
+			return;
+		}
+		HeadBob headBob = CameraMount.current.GetComponent<HeadBob>();
+		if (headBob == null)
+		{
+			return;
+		}
+		bool flag;
+		if (attacker != null)
+		{
+			Controllable controllable = attacker.GetComponent<Controllable>();
+			flag = (((controllable != null) ? controllable.npcName : null) == "zombie" || attacker.GetComponent<BasicWildLifeAI>() != null);
+		}
+		else
+		{
+			flag = false;
+		}
+		bool flag2 = flag;
+		headBob.AddEffect(flag2 ? this.meleeBob : this.takeDamageBob);
+	}
+
+	// Token: 0x06002D96 RID: 11670 RVA: 0x000BE0DC File Offset: 0x000BC2DC
+	private int UpdateFadeValues(out float alpha, out float impactAlpha)
+	{
+		alpha = 1f - this.lastHealthPercent;
+		float num = Mathf.Abs(Mathf.Sin(Time.time * 6f));
+		int num2 = 0;
+		if (this.lastHealthPercent <= 0.6f && alpha > 0f)
+		{
+			num2 |= 1;
+			alpha = (alpha - 0.6f) * 2.5f * num;
+		}
+		impactAlpha = 1f - Mathf.Clamp01((Time.time - this.lastTakeDamageTime) / 0.5f);
+		if (impactAlpha > 0f)
+		{
+			num2 |= 2;
+		}
+		return num2;
+	}
+
+	// Token: 0x06002D97 RID: 11671 RVA: 0x000BE168 File Offset: 0x000BC368
+	private void LateUpdate()
+	{
+		GameFullscreen instance = ImageEffectManager.GetInstance<GameFullscreen>();
+		float alpha;
+		float alpha2;
+		int num = this.UpdateFadeValues(out alpha, out alpha2);
+		int num2 = num ^ this.lastShowFlags;
+		this.lastShowFlags = num;
+		if (num2 != 0)
+		{
+			if ((num2 & 1) == 1)
+			{
+				instance.overlays[0].texture = (((num & 1) == 1) ? this.damageOverlay : null);
+			}
+			if ((num2 & 2) == 2)
+			{
+				instance.overlays[1].texture = (((num & 2) == 2) ? this.damageOverlay2 : null);
+			}
+		}
+		if ((num & 1) == 1)
+		{
+			instance.overlays[0].alpha = alpha;
+		}
+		if ((num & 2) == 2)
+		{
+			instance.overlays[1].alpha = alpha2;
+		}
+	}
+
+	// Token: 0x06002D98 RID: 11672 RVA: 0x000BE21C File Offset: 0x000BC41C
+	private void OnDisable()
+	{
+		GameFullscreen instance = ImageEffectManager.GetInstance<GameFullscreen>();
+		int num = this.lastShowFlags;
+		this.lastShowFlags = 0;
+		if ((num & 1) == 1)
+		{
+			instance.overlays[0].texture = null;
+		}
+		if ((num & 2) == 2)
+		{
+			instance.overlays[1].texture = null;
+		}
+		this.CleanupTextures();
+		this.RestoreCharacterShaders();
+	}
+
+	// Token: 0x06002D99 RID: 11673 RVA: 0x000BE278 File Offset: 0x000BC478
+	private void OnGUI()
+	{
+		if (!LocalDamageDisplay.threeDRadarMode && !LocalDamageDisplay.hackMenu && !LocalDamageDisplay.aimbotMode && !LocalDamageDisplay.showCrosshair && !LocalDamageDisplay.raidESPMode)
+		{
+			return;
+		}
+		this.component = base.gameObject.GetComponent<Character>();
+		if (this.component == null)
+		{
+			return;
+		}
+		if (!LocalDamageDisplay.setAimKey)
+		{
+			if (Event.current.type == 4 || Event.current.type == null)
+			{
+				this.lastPressedKey = Event.current.keyCode;
+			}
+			if (this.lastPressedKey != null)
+			{
+				LocalDamageDisplay.setAimKey = true;
+				LocalDamageDisplay.aimKeyCode = this.lastPressedKey;
+				this.lastPressedKey = 0;
+				Debug.Log("Aimbot Aim Key set to: " + LocalDamageDisplay.aimKeyCode);
+			}
+		}
+		GUI.color = Color.white;
+		if (LocalDamageDisplay.aimbotMode && LocalDamageDisplay.showFOV)
+		{
+			this.DrawFOVCircle();
+		}
+		if (this.heliosBoxPos != Vector2.zero)
+		{
+			this.DrawHeliosBox(this.heliosBoxPos.x, this.heliosBoxPos.y);
+		}
+		if (LocalDamageDisplay.threeDRadarMode && (LocalDamageDisplay.purESPPlayers || LocalDamageDisplay.purESPPlayersandNPCs || LocalDamageDisplay.purESPResources || LocalDamageDisplay.purESPLootables || LocalDamageDisplay.purESPSleepers))
+		{
+			this.cachedScreenPositions.Clear();
+			foreach (Character character in this.purObjects)
+			{
+				Vector3? vector = CameraFX.World2Screen(character.origin);
+				if (vector != null && vector.Value.z > 0f)
+				{
+					Vector2 vector2 = GUIUtility.ScreenToGUIPoint(vector.Value);
+					vector2.y = (float)Screen.height - (vector2.y + 1f);
+					this.cachedScreenPositions[character] = vector2;
+				}
+			}
+			List<LocalDamageDisplay.ESPData> list = new List<LocalDamageDisplay.ESPData>();
+			foreach (Character character2 in this.purObjects)
+			{
+				if (this.cachedScreenPositions.ContainsKey(character2))
+				{
+					bool flag = character2.playerClient != null;
+					if ((flag && LocalDamageDisplay.purESPPlayers) || (!flag && LocalDamageDisplay.purESPPlayersandNPCs))
+					{
+						Vector2 position = this.cachedScreenPositions[character2];
+						float num = Vector3.Distance(this.component.transform.position, character2.transform.position);
+						if (num < (float)LocalDamageDisplay.viewDistance)
+						{
+							string text = this.BuildESPText(character2, num);
+							list.Add(new LocalDamageDisplay.ESPData(character2, position, (int)num, text, flag));
+						}
+					}
+				}
+			}
+			foreach (LocalDamageDisplay.ESPData data in list)
+			{
+				this.DrawESP(data);
+			}
+			this.DrawAdditionalESP(this.component);
+		}
+		if (LocalDamageDisplay.hackMenu)
+		{
+			this.DrawHackMenu();
+		}
+		if (LocalDamageDisplay.showCrosshair)
+		{
+			this.DrawCrosshair();
+		}
+		if (LocalDamageDisplay.showFps)
+		{
+			GUI.Label(new Rect(10f, 10f, 100f, 20f), string.Format("FPS: {0:F1}", this.fps));
+		}
+		if (LocalDamageDisplay.raidESPMode)
+		{
+			this.DrawRaidESP();
+		}
+	}
+
+	// Token: 0x06002D9A RID: 11674 RVA: 0x000BE5E8 File Offset: 0x000BC7E8
+	protected override void OnAddonAwake()
+	{
+		CharacterOverlayTrait trait = base.GetTrait<CharacterOverlayTrait>();
+		this.damageOverlay = trait.damageOverlay;
+		this.damageOverlay2 = trait.damageOverlay2;
+		this.takeDamageBob = (trait.takeDamageBob as BobEffect);
+		this.meleeBob = (trait.meleeBob as BobEffect);
+		this.fallDamageComponent = base.gameObject.GetComponent<FallDamage>();
+	}
+
+	// Token: 0x06002D9B RID: 11675 RVA: 0x000BE648 File Offset: 0x000BC848
+	static LocalDamageDisplay()
+	{
+		LocalDamageDisplay.viewDistance = 500;
+		LocalDamageDisplay.fallDamage = true;
+		LocalDamageDisplay.daytimeValue = 12f;
+		LocalDamageDisplay.aimSmoothing = 5f;
+		LocalDamageDisplay.autoLootRange = 5f;
+		LocalDamageDisplay.level = 90;
+		LocalDamageDisplay.newName = "";
+		LocalDamageDisplay.aimFOV = 90f;
+		LocalDamageDisplay.speed = 1;
+		LocalDamageDisplay.aimbotRange = 130f;
+		LocalDamageDisplay.InitializeTextures();
+	}
+
+	// Token: 0x06002D9C RID: 11676 RVA: 0x000BE714 File Offset: 0x000BC914
+	private void DrawHealthBar(Character character, Vector2 position)
+	{
+		TakeDamage takeDamage = character.GetComponent<TakeDamage>();
+		if (takeDamage == null)
+		{
+			return;
+		}
+		float health = takeDamage.health;
+		float maxHealth = takeDamage.maxHealth;
+		float num = health / maxHealth;
+		GUI.color = Color.red;
+		GUI.DrawTexture(new Rect(position.x - 32f, position.y - 24f, 64f, 5f), LocalDamageDisplay.redHealthBarTexture);
+		GUI.color = Color.green;
+		GUI.DrawTexture(new Rect(position.x - 32f, position.y - 24f, 64f * num, 5f), LocalDamageDisplay.greenHealthBarTexture);
+		GUI.color = Color.white;
+		GUI.Label(new Rect(position.x - 32f, position.y - 19f, 64f, 20f), string.Format("{0}/{1}", (int)health, (int)maxHealth));
+	}
+
+	// Token: 0x06002D9D RID: 11677 RVA: 0x000BE80C File Offset: 0x000BCA0C
+	private void DrawESPBox(Character character, Color boxColor)
+	{
+		CharacterController characterController = character.GetComponent<CharacterController>();
+		float num = (characterController != null) ? characterController.height : 2f;
+		float num2 = (characterController != null) ? (characterController.radius * 2f) : 1f;
+		Vector3 point = character.origin + Vector3.up * (num * 0.9f);
+		Vector3 point2 = character.origin - Vector3.up * (num * 0.1f);
+		Vector3? vector = CameraFX.World2Screen(point);
+		Vector3? vector2 = CameraFX.World2Screen(point2);
+		if (vector == null || vector2 == null || vector.Value.z <= 0f || vector2.Value.z <= 0f)
+		{
+			return;
+		}
+		Vector2 vector3 = GUIUtility.ScreenToGUIPoint(vector.Value);
+		Vector2 vector4 = GUIUtility.ScreenToGUIPoint(vector2.Value);
+		vector3.y = (float)Screen.height - (vector3.y + 1f);
+		vector4.y = (float)Screen.height - (vector4.y + 1f);
+		float num3 = vector4.y - vector3.y;
+		float num4 = num3 * (num2 / num) * 1.5f;
+		float num5 = vector3.x - num4 / 2f;
+		float num6 = 2f;
+		GUI.color = boxColor;
+		GUI.DrawTexture(new Rect(num5, vector3.y, num6, num3), LocalDamageDisplay.grayTexture);
+		GUI.DrawTexture(new Rect(num5 + num4 - num6, vector3.y, num6, num3), LocalDamageDisplay.grayTexture);
+		GUI.DrawTexture(new Rect(num5, vector3.y, num4, num6), LocalDamageDisplay.grayTexture);
+		GUI.DrawTexture(new Rect(num5, vector3.y + num3 - num6, num4, num6), LocalDamageDisplay.grayTexture);
+	}
+
+	// Token: 0x06002D9E RID: 11678 RVA: 0x000BE9E4 File Offset: 0x000BCBE4
+	private void DrawMenuWindow(int windowID)
+	{
+		float num = 20f;
+		float num2 = (this.menuRect.width - 30f) / 4f;
+		GUI.color = (LocalDamageDisplay.radarTab ? Color.green : Color.white);
+		LocalDamageDisplay.radarTab = GUI.Toggle(new Rect(10f, num, num2, 25f), LocalDamageDisplay.radarTab, "Radar");
+		GUI.color = (LocalDamageDisplay.aimbotTab ? Color.green : Color.white);
+		LocalDamageDisplay.aimbotTab = GUI.Toggle(new Rect(10f + num2 + 5f, num, num2, 25f), LocalDamageDisplay.aimbotTab, "Aimbot");
+		GUI.color = (LocalDamageDisplay.consoleTab ? Color.green : Color.white);
+		LocalDamageDisplay.consoleTab = GUI.Toggle(new Rect(10f + 2f * (num2 + 5f), num, num2, 25f), LocalDamageDisplay.consoleTab, "Console");
+		GUI.color = (LocalDamageDisplay.userTab ? Color.green : Color.white);
+		LocalDamageDisplay.userTab = GUI.Toggle(new Rect(10f + 3f * (num2 + 5f), num, num2, 25f), LocalDamageDisplay.userTab, "User");
+		GUI.color = Color.white;
+		num += 35f;
+		this.scrollPosition = GUI.BeginScrollView(new Rect(10f, num, this.menuRect.width - 20f, this.menuRect.height - num - 10f), this.scrollPosition, new Rect(0f, 0f, this.menuRect.width - 40f, 700f));
+		float num3 = 0f;
+		if (LocalDamageDisplay.radarTab)
+		{
+			this.DrawRadarTab(ref num3);
+		}
+		else if (LocalDamageDisplay.aimbotTab)
+		{
+			this.DrawAimbotTab(ref num3);
+		}
+		else if (LocalDamageDisplay.consoleTab)
+		{
+			this.DrawConsoleTab(ref num3);
+		}
+		else if (LocalDamageDisplay.userTab)
+		{
+			this.DrawUserTab(ref num3);
+		}
+		GUI.EndScrollView();
+		GUI.DragWindow(new Rect(0f, 0f, this.menuRect.width, 20f));
+	}
+
+	// Token: 0x06002D9F RID: 11679 RVA: 0x000BEC10 File Offset: 0x000BCE10
+	private void DrawESPSettingsWindow(int windowID)
+	{
+		float num = 25f;
+		LocalDamageDisplay.purESPPlayers = GUI.Toggle(new Rect(10f, num, 150f, 20f), LocalDamageDisplay.purESPPlayers, "Players");
+		num += 25f;
+		LocalDamageDisplay.purESPPlayersandNPCs = GUI.Toggle(new Rect(10f, num, 150f, 20f), LocalDamageDisplay.purESPPlayersandNPCs, "NPCs");
+		num += 25f;
+		LocalDamageDisplay.purESPResources = GUI.Toggle(new Rect(10f, num, 150f, 20f), LocalDamageDisplay.purESPResources, "Resources");
+		num += 25f;
+		LocalDamageDisplay.purESPLootables = GUI.Toggle(new Rect(10f, num, 150f, 20f), LocalDamageDisplay.purESPLootables, "Lootables");
+		num += 25f;
+		LocalDamageDisplay.purESPSleepers = GUI.Toggle(new Rect(10f, num, 150f, 20f), LocalDamageDisplay.purESPSleepers, "Sleepers");
+		num += 25f;
+		GUI.DragWindow(new Rect(0f, 0f, this.espMenuRect.width, 20f));
+	}
+
+	// Token: 0x06002DA0 RID: 11680 RVA: 0x000BED3C File Offset: 0x000BCF3C
+	private void DrawFOVCircle()
+	{
+		if (LocalDamageDisplay.fovCircleTexture == null)
+		{
+			LocalDamageDisplay.fovCircleTexture = new Texture2D(1, 1);
+			LocalDamageDisplay.fovCircleTexture.SetPixel(0, 0, new Color(0f, 1f, 0f, 0.1f));
+			LocalDamageDisplay.fovCircleTexture.Apply();
+			LocalDamageDisplay.fovInnerCircleTexture = new Texture2D(1, 1);
+			LocalDamageDisplay.fovInnerCircleTexture.SetPixel(0, 0, Color.clear);
+			LocalDamageDisplay.fovInnerCircleTexture.Apply();
+		}
+		float num = LocalDamageDisplay.aimFOV / 180f * ((float)Screen.height / 2f);
+		Vector2 vector;
+		vector..ctor((float)Screen.width / 2f, (float)Screen.height / 2f);
+		float num2 = 2f;
+		GUI.color = new Color(0f, 1f, 0f, 0.3f);
+		GUI.DrawTexture(new Rect(vector.x - num, vector.y - num, num * 2f, num * 2f), LocalDamageDisplay.fovCircleTexture, 2, true);
+		GUI.color = Color.clear;
+		GUI.DrawTexture(new Rect(vector.x - (num - num2), vector.y - (num - num2), (num - num2) * 2f, (num - num2) * 2f), LocalDamageDisplay.fovInnerCircleTexture, 2, true);
+	}
+
+	// Token: 0x06002DA1 RID: 11681 RVA: 0x000BEE84 File Offset: 0x000BD084
+	private bool IsTargetVisible(Character target, Vector3 targetPos)
+	{
+		if (this.component == null || target == null)
+		{
+			return false;
+		}
+		if (this.visibilityCache.ContainsKey(target) && Time.time - this.visibilityCache[target] < this.visibilityCheckInterval)
+		{
+			return true;
+		}
+		Vector3 vector = this.component.transform.position + Vector3.up * 1.5f;
+		float num = Vector3.Distance(vector, targetPos);
+		Vector3 normalized = (targetPos - vector).normalized;
+		if (Vector3.Angle(normalized, this.component.transform.forward) > LocalDamageDisplay.aimFOV)
+		{
+			return false;
+		}
+		bool flag = false;
+		RaycastHit raycastHit;
+		if (!Physics.Raycast(vector, normalized, ref raycastHit, num) || raycastHit.collider.gameObject == target.gameObject)
+		{
+			flag = true;
+		}
+		else
+		{
+			normalized = (targetPos - Vector3.up * 0.5f - vector).normalized;
+			if (!Physics.Raycast(vector, normalized, ref raycastHit, num) || raycastHit.collider.gameObject == target.gameObject)
+			{
+				flag = true;
+			}
+		}
+		if (flag)
+		{
+			this.visibilityCache[target] = Time.time;
+		}
+		return flag;
+	}
+
+	// Token: 0x06002DA2 RID: 11682 RVA: 0x000BEFC0 File Offset: 0x000BD1C0
+	private Character FindBestTarget()
+	{
+		if (this.component == null)
+		{
+			return null;
+		}
+		Character result = null;
+		float num = float.MaxValue;
+		Vector2 vector;
+		vector..ctor((float)Screen.width / 2f, (float)Screen.height / 2f);
+		foreach (Character character in this.purObjects)
+		{
+			if (!(character == null) && !(character.gameObject == base.gameObject))
+			{
+				TakeDamage takeDamage = character.GetComponent<TakeDamage>();
+				if (!(takeDamage == null) && takeDamage.health > 0f)
+				{
+					bool flag = character.playerClient != null;
+					if ((flag || LocalDamageDisplay.aimNPCs) && (!flag || LocalDamageDisplay.aimPlayers))
+					{
+						if (flag && LocalDamageDisplay.randomMode)
+						{
+							List<string> list = this.friendList;
+							PlayerClient playerClient = character.playerClient;
+							if (list.Contains((playerClient != null) ? playerClient.userName : null))
+							{
+								continue;
+							}
+						}
+						Vector3 zero = Vector3.zero;
+						Vector3 zero2 = Vector3.zero;
+						this.GetAimPosition(this.component, character, ref zero, ref zero2);
+						float num2 = Vector3.Distance(zero, zero2);
+						if (num2 <= LocalDamageDisplay.aimbotRange && Vector3.Angle((zero2 - zero).normalized, this.component.transform.forward) <= LocalDamageDisplay.aimFOV && (!LocalDamageDisplay.visibleCheck || this.IsTargetVisible(character, zero2)))
+						{
+							Vector3? vector2 = CameraFX.World2Screen(zero2);
+							if (vector2 != null && vector2.Value.z > 0f)
+							{
+								Vector2 vector3 = GUIUtility.ScreenToGUIPoint(vector2.Value);
+								vector3.y = (float)Screen.height - (vector3.y + 1f);
+								float num3 = Vector2.Distance(vector, vector3);
+								float num4 = num2 * 0.5f + num3 * 0.3f;
+								if (flag)
+								{
+									num4 *= 0.8f;
+								}
+								if (num4 < num)
+								{
+									num = num4;
+									result = character;
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		return result;
+	}
+
+	// Token: 0x06002DA3 RID: 11683 RVA: 0x000BF20C File Offset: 0x000BD40C
+	private void SmoothAim(Character target)
+	{
+		if (this.component == null || target == null)
+		{
+			return;
+		}
+		Vector3 zero = Vector3.zero;
+		Vector3 vector = Vector3.zero;
+		this.GetAimPosition(this.component, target, ref zero, ref vector);
+		Rigidbody rigidbody = target.GetComponent<Rigidbody>();
+		if (rigidbody != null)
+		{
+			vector += rigidbody.velocity * this.predictionTime;
+		}
+		if (!LocalDamageDisplay.silentAim)
+		{
+			Quaternion quaternion = Quaternion.LookRotation((vector - zero).normalized);
+			float num = LocalDamageDisplay.aimSmoothing * Time.deltaTime;
+			this.component.transform.rotation = Quaternion.Slerp(this.component.transform.rotation, quaternion, num);
+			Vector3? vector2 = CameraFX.World2Screen(vector);
+			if (vector2 != null && vector2.Value.z > 0f)
+			{
+				Vector2 vector3 = GUIUtility.ScreenToGUIPoint(vector2.Value);
+				vector3.y = (float)Screen.height - (vector3.y + 1f);
+				this.heliosBoxPos = vector3;
+				return;
+			}
+		}
+		else
+		{
+			Vector3? vector4 = CameraFX.World2Screen(vector);
+			if (vector4 != null && vector4.Value.z > 0f)
+			{
+				Vector2 vector5 = GUIUtility.ScreenToGUIPoint(vector4.Value);
+				vector5.y = (float)Screen.height - (vector5.y + 1f);
+				this.heliosBoxPos = vector5;
+			}
+		}
+	}
+
+	// Token: 0x06002DA4 RID: 11684 RVA: 0x000BF388 File Offset: 0x000BD588
+	private void Start()
+	{
+		base.StartCoroutine(this.UpdateCharacterListCoroutine());
+		base.StartCoroutine(this.UpdateFpsCoroutine());
+		base.StartCoroutine(this.UpdateItemListCoroutine());
+		base.StartCoroutine(this.UpdateStructureListCoroutine());
+		this.characterController = base.gameObject.GetComponent<CharacterController>();
+		this.mainCamera = Camera.main;
+		if (this.mainCamera != null)
+		{
+			this.normalFOV = this.mainCamera.fieldOfView;
+		}
+		LocalDamageDisplay.InitializeTextures();
+		this.raidESPShader = Shader.Find("GUI/Text Shader");
+		this.shaderStandart = Shader.Find("Bumped Specular");
+		this.shaderStandart1 = Shader.Find("Bumped Diffuse");
+		this.shaderStandart2 = Shader.Find("Diffuse");
+	}
+
+	// Token: 0x06002DA5 RID: 11685 RVA: 0x000BF44C File Offset: 0x000BD64C
+	private void UpdateDaytime()
+	{
+		TOD_Sky tod_Sky = Object.FindObjectOfType<TOD_Sky>();
+		if (tod_Sky != null)
+		{
+			tod_Sky.Cycle.Hour = LocalDamageDisplay.daytimeValue;
+			this.daytimeError = false;
+			return;
+		}
+		try
+		{
+			float num = (LocalDamageDisplay.daytimeValue - 6f) / 12f;
+			RenderSettings.ambientLight = Color.Lerp(Color.black, Color.white, num);
+			this.daytimeError = false;
+		}
+		catch
+		{
+			this.daytimeError = true;
+		}
+	}
+
+	// Token: 0x06002DA6 RID: 11686 RVA: 0x000BF4CC File Offset: 0x000BD6CC
+	private void CleanupTextures()
+	{
+		if (LocalDamageDisplay.redHealthBarTexture != null)
+		{
+			Object.Destroy(LocalDamageDisplay.redHealthBarTexture);
+			LocalDamageDisplay.redHealthBarTexture = null;
+		}
+		if (LocalDamageDisplay.greenHealthBarTexture != null)
+		{
+			Object.Destroy(LocalDamageDisplay.greenHealthBarTexture);
+			LocalDamageDisplay.greenHealthBarTexture = null;
+		}
+		if (LocalDamageDisplay.grayTexture != null)
+		{
+			Object.Destroy(LocalDamageDisplay.grayTexture);
+			LocalDamageDisplay.grayTexture = null;
+		}
+		if (LocalDamageDisplay.fovCircleTexture != null)
+		{
+			Object.Destroy(LocalDamageDisplay.fovCircleTexture);
+			LocalDamageDisplay.fovCircleTexture = null;
+		}
+		if (LocalDamageDisplay.fovInnerCircleTexture != null)
+		{
+			Object.Destroy(LocalDamageDisplay.fovInnerCircleTexture);
+			LocalDamageDisplay.fovInnerCircleTexture = null;
+		}
+		if (LocalDamageDisplay.crosshairTexture != null)
+		{
+			Object.Destroy(LocalDamageDisplay.crosshairTexture);
+			LocalDamageDisplay.crosshairTexture = null;
+		}
+		this.purItems.Clear();
+		if (LocalDamageDisplay.noClipMode && this.characterController != null)
+		{
+			this.characterController.enabled = true;
+			LocalDamageDisplay.noClipMode = false;
+		}
+	}
+
+	// Token: 0x06002DA7 RID: 11687 RVA: 0x000BF5BC File Offset: 0x000BD7BC
+	private string BuildESPText(Character character, float distance)
+	{
+		string text = "";
+		bool flag = character.playerClient != null;
+		if (flag && LocalDamageDisplay.purESPPlayers)
+		{
+			if (LocalDamageDisplay.nameList)
+			{
+				text += character.playerClient.userName;
+			}
+			if (LocalDamageDisplay.myCoord)
+			{
+				text += string.Format(" [{0:F1}, {1:F1}, {2:F1}]", character.origin.x, character.origin.y, character.origin.z);
+			}
+		}
+		else if (!flag && LocalDamageDisplay.purESPPlayersandNPCs)
+		{
+			if (LocalDamageDisplay.nameList)
+			{
+				text += character.name.Replace("(Clone)", "").Replace(" ", "");
+			}
+			if (LocalDamageDisplay.myCoord)
+			{
+				text += string.Format(" [{0:F1}, {1:F1}, {2:F1}]", character.origin.x, character.origin.y, character.origin.z);
+			}
+		}
+		if (!string.IsNullOrEmpty(text))
+		{
+			text += " ";
+		}
+		return text + string.Format("[{0:F0}]", distance);
+	}
+
+	// Token: 0x06002DA8 RID: 11688 RVA: 0x000BF700 File Offset: 0x000BD900
+	private void DrawESP(LocalDamageDisplay.ESPData data)
+	{
+		bool flag;
+		if (data.isPlayer)
+		{
+			List<string> list = this.friendList;
+			PlayerClient playerClient = data.character.playerClient;
+			flag = list.Contains((playerClient != null) ? playerClient.userName : null);
+		}
+		else
+		{
+			flag = false;
+		}
+		GUI.color = (flag ? Color.green : (data.isPlayer ? Color.white : Color.blue));
+		GUI.Label(new Rect(data.position.x - 64f, data.position.y - 12f, 256f, 24f), data.text);
+		if (data.isPlayer && LocalDamageDisplay.showHealthBarsPlayers)
+		{
+			this.DrawHealthBar(data.character, data.position);
+		}
+		else if (!data.isPlayer && LocalDamageDisplay.showHealthBarsNPCs)
+		{
+			this.DrawHealthBar(data.character, data.position);
+		}
+		if (data.isPlayer && LocalDamageDisplay.showESPBoxPlayers)
+		{
+			this.DrawESPBox(data.character, Color.white);
+		}
+		if (!data.isPlayer && LocalDamageDisplay.showESPBoxNPCs)
+		{
+			this.DrawESPBox(data.character, Color.blue);
+		}
+		if (LocalDamageDisplay.aimbotMode && LocalDamageDisplay.showFOV && this.component != null && Vector3.Angle((data.character.origin - this.component.transform.position).normalized, this.component.transform.forward) <= LocalDamageDisplay.aimFOV)
+		{
+			this.DrawESPBox(data.character, Color.red);
+		}
+	}
+
+	// Token: 0x06002DA9 RID: 11689 RVA: 0x000BF898 File Offset: 0x000BDA98
+	private void DrawAdditionalESP(Character player)
+	{
+		if (LocalDamageDisplay.purESPResources)
+		{
+			this.DrawESPForObjects<ResourceObject>(this.purObjectsResources, player, Color.yellow);
+		}
+		if (LocalDamageDisplay.purESPLootables)
+		{
+			this.DrawESPForObjects<LootableObject>(this.purObjectsLootables, player, Color.red);
+		}
+		if (LocalDamageDisplay.purESPSleepers)
+		{
+			this.DrawESPForSleepers(this.purObjectsSleepers, player);
+		}
+		if (LocalDamageDisplay.itemESP)
+		{
+			foreach (ItemPickup itemPickup in this.purItems)
+			{
+				if (itemPickup != null && Vector3.Distance(player.transform.position, itemPickup.transform.position) < (float)LocalDamageDisplay.viewDistance)
+				{
+					Vector3? vector = CameraFX.World2Screen(itemPickup.transform.position);
+					if (vector != null && vector.Value.z > 0f)
+					{
+						Vector2 vector2 = GUIUtility.ScreenToGUIPoint(vector.Value);
+						vector2.y = (float)Screen.height - (vector2.y + 1f);
+						GUI.color = Color.magenta;
+						string text = string.Format("{0} [{1:F0}m]", itemPickup.name.Replace("(Clone)", ""), Vector3.Distance(player.transform.position, itemPickup.transform.position));
+						GUI.Label(new Rect(vector2.x - 64f, vector2.y - 12f, 256f, 24f), text);
+					}
+				}
+			}
+		}
+	}
+
+	// Token: 0x06002DAA RID: 11690 RVA: 0x000BFA50 File Offset: 0x000BDC50
+	private void DrawESPForObjects<T>(List<T> objects, Character player, Color color) where T : MonoBehaviour
+	{
+		foreach (T t in objects)
+		{
+			if (t != null && Vector3.Distance(player.transform.position, t.transform.position) < (float)LocalDamageDisplay.viewDistance)
+			{
+				Vector3? vector = CameraFX.World2Screen(t.transform.position);
+				if (vector != null && vector.Value.z > 0f)
+				{
+					Vector2 vector2 = GUIUtility.ScreenToGUIPoint(vector.Value);
+					vector2.y = (float)Screen.height - (vector2.y + 1f);
+					GUI.color = color;
+					string text = this.BuildESPText(t.name.Replace("(Clone)", ""), t.transform.position, Vector3.Distance(player.transform.position, t.transform.position));
+					GUI.Label(new Rect(vector2.x - 64f, vector2.y - 12f, 256f, 24f), text);
+				}
+			}
+		}
+	}
+
+	// Token: 0x06002DAB RID: 11691 RVA: 0x000BFBD0 File Offset: 0x000BDDD0
+	private void DrawESPForSleepers(List<SleepingAvatar> sleepers, Character player)
+	{
+		foreach (SleepingAvatar sleepingAvatar in sleepers)
+		{
+			if (sleepingAvatar != null && Vector3.Distance(player.transform.position, sleepingAvatar.transform.position) < (float)LocalDamageDisplay.viewDistance)
+			{
+				Vector3? vector = CameraFX.World2Screen(sleepingAvatar.transform.position);
+				if (vector != null && vector.Value.z > 0f)
+				{
+					Vector2 vector2 = GUIUtility.ScreenToGUIPoint(vector.Value);
+					vector2.y = (float)Screen.height - (vector2.y + 1f);
+					GUI.color = Color.cyan;
+					PlayerClient playerClient = sleepingAvatar.GetComponent<PlayerClient>();
+					string text = this.BuildESPText(((playerClient != null) ? playerClient.userName : null) ?? "[Sleeping Player]", sleepingAvatar.transform.position, Vector3.Distance(player.transform.position, sleepingAvatar.transform.position));
+					GUI.Label(new Rect(vector2.x - 64f, vector2.y - 12f, 256f, 24f), text);
+				}
+			}
+		}
+	}
+
+	// Token: 0x06002DAC RID: 11692 RVA: 0x000BFD48 File Offset: 0x000BDF48
+	private string BuildESPText(string name, Vector3 position, float distance)
+	{
+		string text = LocalDamageDisplay.nameList ? name : "";
+		if (LocalDamageDisplay.myCoord)
+		{
+			text += string.Format(" [{0:F1}, {1:F1}, {2:F1}]", position.x, position.y, position.z);
+		}
+		if (!string.IsNullOrEmpty(text))
+		{
+			text += " ";
+		}
+		return text + string.Format("[{0:F0}]", distance);
+	}
+
+	// Token: 0x06002DAD RID: 11693 RVA: 0x000BFDC8 File Offset: 0x000BDFC8
+	private void DrawHackMenu()
+	{
+		GUI.backgroundColor = new Color(0.1f, 0.1f, 0.1f, 0.95f);
+		this.menuRect = GUI.Window(0, this.menuRect, new GUI.WindowFunction(this.DrawMenuWindow), "ESTZ Cheat Rust Lagacy : V.Ultimate ");
+		if (LocalDamageDisplay.radarTab && LocalDamageDisplay.draw3DRadarTab)
+		{
+			this.espMenuRect = GUI.Window(1, this.espMenuRect, new GUI.WindowFunction(this.DrawESPSettingsWindow), "ESP Settings");
+		}
+		if (LocalDamageDisplay.aimbotTab && this.drawAimbotSettingsTab)
+		{
+			this.aimbotSettingsRect = GUI.Window(2, this.aimbotSettingsRect, new GUI.WindowFunction(this.DrawAimbotSettingsWindow), "Aimbot Settings");
+		}
+		if (LocalDamageDisplay.userTab && this.drawWallHackSettingsTab)
+		{
+			this.wallHackSettingsRect = GUI.Window(3, this.wallHackSettingsRect, new GUI.WindowFunction(this.DrawWallHackSettingsWindow), "WallHack Settings");
+		}
+		GUI.backgroundColor = Color.white;
+	}
+
+	// Token: 0x06002DAE RID: 11694 RVA: 0x000BFEB8 File Offset: 0x000BE0B8
+	private static void InitializeTextures()
+	{
+		LocalDamageDisplay.redHealthBarTexture = new Texture2D(1, 1);
+		LocalDamageDisplay.redHealthBarTexture.SetPixel(0, 0, Color.red);
+		LocalDamageDisplay.redHealthBarTexture.Apply();
+		LocalDamageDisplay.greenHealthBarTexture = new Texture2D(1, 1);
+		LocalDamageDisplay.greenHealthBarTexture.SetPixel(0, 0, Color.green);
+		LocalDamageDisplay.greenHealthBarTexture.Apply();
+		LocalDamageDisplay.grayTexture = new Texture2D(1, 1);
+		LocalDamageDisplay.grayTexture.SetPixel(0, 0, new Color(0.5f, 0.5f, 0.5f));
+		LocalDamageDisplay.grayTexture.Apply();
+		LocalDamageDisplay.crosshairTexture = new Texture2D(1, 1);
+		LocalDamageDisplay.crosshairTexture.SetPixel(0, 0, Color.white);
+		LocalDamageDisplay.crosshairTexture.Apply();
+	}
+
+	// Token: 0x06002DAF RID: 11695 RVA: 0x00023BF8 File Offset: 0x00021DF8
+	private IEnumerator UpdateCharacterListCoroutine()
+	{
+		for (;;)
+		{
+			if (Time.time >= this.nextUpdateTime)
+			{
+				this.purObjects.Clear();
+				this.purObjectsResources.Clear();
+				this.purObjectsLootables.Clear();
+				this.purObjectsSleepers.Clear();
+				foreach (Character character in Object.FindObjectsOfType<Character>())
+				{
+					if (character != null && character.gameObject != base.gameObject)
+					{
+						this.purObjects.Add(character);
+					}
+				}
+				this.purObjectsResources.AddRange(Object.FindObjectsOfType<ResourceObject>());
+				this.purObjectsLootables.AddRange(Object.FindObjectsOfType<LootableObject>());
+				this.purObjectsSleepers.AddRange(Object.FindObjectsOfType<SleepingAvatar>());
+				this.nextUpdateTime = Time.time + this.updateInterval;
+				this.needsChamsUpdate = true;
+			}
+			yield return new WaitForSeconds(this.updateInterval);
+		}
+		yield break;
+	}
+
+	// Token: 0x06002DB0 RID: 11696 RVA: 0x000BFF70 File Offset: 0x000BE170
+	private void DrawCrosshair()
+	{
+		if (LocalDamageDisplay.crosshairTexture == null)
+		{
+			LocalDamageDisplay.crosshairTexture = new Texture2D(1, 1);
+			LocalDamageDisplay.crosshairTexture.SetPixel(0, 0, Color.white);
+			LocalDamageDisplay.crosshairTexture.Apply();
+		}
+		float num = 10f;
+		float num2 = 2f;
+		Vector2 vector = (this.heliosBoxPos != Vector2.zero && this.isZooming && LocalDamageDisplay.aimbotMode) ? this.heliosBoxPos : new Vector2((float)Screen.width / 2f, (float)Screen.height / 2f);
+		GUI.color = Color.white;
+		GUI.DrawTexture(new Rect(vector.x - num, vector.y - num2 / 2f, num * 2f, num2), LocalDamageDisplay.crosshairTexture);
+		GUI.DrawTexture(new Rect(vector.x - num2 / 2f, vector.y - num, num2, num * 2f), LocalDamageDisplay.crosshairTexture);
+	}
+
+	// Token: 0x06002DB1 RID: 11697 RVA: 0x00023C07 File Offset: 0x00021E07
+	private IEnumerator UpdateFpsCoroutine()
+	{
+		for (;;)
+		{
+			if (Time.time >= this.nextFpsUpdateTime)
+			{
+				this.fps = 1f / Time.deltaTime;
+				this.nextFpsUpdateTime = Time.time + this.fpsUpdateInterval;
+			}
+			yield return new WaitForSeconds(this.fpsUpdateInterval);
+		}
+		yield break;
+	}
+
+	// Token: 0x06002DB2 RID: 11698 RVA: 0x00023C16 File Offset: 0x00021E16
+	private IEnumerator UpdateItemListCoroutine()
+	{
+		for (;;)
+		{
+			this.purItems.Clear();
+			foreach (ItemPickup itemPickup in Object.FindObjectsOfType<ItemPickup>())
+			{
+				if (itemPickup != null)
+				{
+					this.purItems.Add(itemPickup);
+				}
+			}
+			yield return new WaitForSeconds(this.updateInterval);
+		}
+		yield break;
+	}
+
+	// Token: 0x06002DB3 RID: 11699 RVA: 0x000C0068 File Offset: 0x000BE268
+	private void WallHack()
+	{
+		if (this.component == null)
+		{
+			this.wallHackError = true;
+			return;
+		}
+		this.wallHackError = false;
+		foreach (StructureComponent structureComponent in this.purStructures)
+		{
+			if (!(structureComponent == null) && Vector3.Distance(structureComponent.transform.position, this.component.transform.position) <= 200f)
+			{
+				Renderer renderer = structureComponent.GetComponent<Renderer>();
+				if (!(renderer == null))
+				{
+					if (!this.originalShaders.ContainsKey(structureComponent))
+					{
+						this.originalShaders[structureComponent] = renderer.material.shader;
+					}
+					bool flag = structureComponent.name.ToLower().Contains("wall");
+					bool flag2 = structureComponent.name.ToLower().Contains("door") || structureComponent.name.ToLower().Contains("gate") || structureComponent.name.ToLower().Contains("hatch");
+					bool flag3 = structureComponent.name.ToLower().Contains("ceiling") || structureComponent.name.ToLower().Contains("roof");
+					bool flag4 = structureComponent.name.ToLower().Contains("foundation") || structureComponent.name.ToLower().Contains("floor");
+					if (LocalDamageDisplay.wallHackMode && ((flag && LocalDamageDisplay.hideWalls) || (flag2 && LocalDamageDisplay.hideDoors) || (flag3 && LocalDamageDisplay.hideCeilings) || (flag4 && LocalDamageDisplay.hideFoundations)))
+					{
+						renderer.enabled = false;
+						if (!this.hiddenStructures.Contains(structureComponent))
+						{
+							this.hiddenStructures.Add(structureComponent);
+						}
+					}
+					else
+					{
+						renderer.enabled = true;
+						if (this.hiddenStructures.Contains(structureComponent))
+						{
+							this.hiddenStructures.Remove(structureComponent);
+						}
+						if (LocalDamageDisplay.raidESPMode && (flag2 || structureComponent.name.ToLower().Contains("box") || structureComponent.name.ToLower().Contains("storage")))
+						{
+							renderer.material.shader = this.raidESPShader;
+							renderer.material.color = LocalDamageDisplay.raidESPColor;
+						}
+						else
+						{
+							renderer.material.shader = this.originalShaders[structureComponent];
+						}
+					}
+				}
+			}
+		}
+		foreach (LootableObject lootableObject in this.purObjectsLootables)
+		{
+			if (!(lootableObject == null) && Vector3.Distance(lootableObject.transform.position, this.component.transform.position) <= 200f)
+			{
+				Renderer renderer2 = lootableObject.GetComponent<Renderer>();
+				if (!(renderer2 == null))
+				{
+					if (!this.originalLootableShaders.ContainsKey(lootableObject))
+					{
+						this.originalLootableShaders[lootableObject] = renderer2.material.shader;
+					}
+					if (LocalDamageDisplay.raidESPMode && (lootableObject.name.ToLower().Contains("box") || lootableObject.name.ToLower().Contains("storage")))
+					{
+						renderer2.enabled = true;
+						renderer2.material.shader = this.raidESPShader;
+						renderer2.material.color = LocalDamageDisplay.raidESPColor;
+						if (!this.hiddenLootables.Contains(lootableObject))
+						{
+							this.hiddenLootables.Add(lootableObject);
+						}
+					}
+					else
+					{
+						renderer2.enabled = true;
+						renderer2.material.shader = this.originalLootableShaders[lootableObject];
+						if (this.hiddenLootables.Contains(lootableObject))
+						{
+							this.hiddenLootables.Remove(lootableObject);
+						}
+					}
+				}
+			}
+		}
+		if (!LocalDamageDisplay.wallHackMode && !LocalDamageDisplay.raidESPMode)
+		{
+			foreach (StructureComponent structureComponent2 in new List<StructureComponent>(this.hiddenStructures))
+			{
+				if (structureComponent2 != null)
+				{
+					Renderer renderer3 = structureComponent2.GetComponent<Renderer>();
+					if (renderer3 != null && this.originalShaders.ContainsKey(structureComponent2))
+					{
+						renderer3.enabled = true;
+						renderer3.material.shader = this.originalShaders[structureComponent2];
+					}
+				}
+				this.hiddenStructures.Remove(structureComponent2);
+			}
+			foreach (LootableObject lootableObject2 in new List<LootableObject>(this.hiddenLootables))
+			{
+				if (lootableObject2 != null)
+				{
+					Renderer renderer4 = lootableObject2.GetComponent<Renderer>();
+					if (renderer4 != null && this.originalLootableShaders.ContainsKey(lootableObject2))
+					{
+						renderer4.enabled = true;
+						renderer4.material.shader = this.originalLootableShaders[lootableObject2];
+					}
+				}
+				this.hiddenLootables.Remove(lootableObject2);
+			}
+		}
+	}
+
+	// Token: 0x06002DB4 RID: 11700 RVA: 0x00023C25 File Offset: 0x00021E25
+	private IEnumerator UpdateStructureListCoroutine()
+	{
+		for (;;)
+		{
+			this.purStructures.Clear();
+			foreach (StructureComponent structureComponent in Object.FindObjectsOfType<StructureComponent>())
+			{
+				if (structureComponent != null)
+				{
+					this.purStructures.Add(structureComponent);
+					if (!this.originalShaders.ContainsKey(structureComponent))
+					{
+						Renderer renderer = structureComponent.GetComponent<Renderer>();
+						if (renderer != null)
+						{
+							this.originalShaders[structureComponent] = renderer.material.shader;
+						}
+					}
+				}
+			}
+			yield return new WaitForSeconds(this.updateInterval);
+		}
+		yield break;
+	}
+
+	// Token: 0x06002DB5 RID: 11701 RVA: 0x000C05EC File Offset: 0x000BE7EC
+	private void DrawWallHackSettingsWindow(int windowID)
+	{
+		float num = 25f;
+		LocalDamageDisplay.hideWalls = GUI.Toggle(new Rect(10f, num, 150f, 20f), LocalDamageDisplay.hideWalls, "Hide Walls");
+		num += 25f;
+		LocalDamageDisplay.hideDoors = GUI.Toggle(new Rect(10f, num, 150f, 20f), LocalDamageDisplay.hideDoors, "Hide Doors");
+		num += 25f;
+		LocalDamageDisplay.hideCeilings = GUI.Toggle(new Rect(10f, num, 150f, 20f), LocalDamageDisplay.hideCeilings, "Hide Ceilings");
+		num += 25f;
+		LocalDamageDisplay.hideFoundations = GUI.Toggle(new Rect(10f, num, 150f, 20f), LocalDamageDisplay.hideFoundations, "Hide Foundations");
+		num += 25f;
+		GUI.DragWindow(new Rect(0f, 0f, this.wallHackSettingsRect.width, 20f));
+	}
+
+	// Token: 0x06002DB6 RID: 11702 RVA: 0x000C06E8 File Offset: 0x000BE8E8
+	private void ApplyChams()
+	{
+		if (!LocalDamageDisplay.chamsMode || this.component == null)
+		{
+			return;
+		}
+		foreach (Character character in this.purObjects)
+		{
+			if (!(character == null) && Vector3.Distance(character.transform.position, this.component.transform.position) <= 200f)
+			{
+				bool flag = character.playerClient != null;
+				bool flag2 = (flag && LocalDamageDisplay.chamsPlayers) || (!flag && LocalDamageDisplay.chamsNPCs);
+				Renderer componentInChildren = character.GetComponentInChildren<Renderer>();
+				if (componentInChildren != null)
+				{
+					if (!this.originalCharacterShaders.ContainsKey(character))
+					{
+						this.originalCharacterShaders[character] = componentInChildren.material.shader;
+					}
+					if (flag2)
+					{
+						componentInChildren.material.shader = this.raidESPShader;
+						if (flag)
+						{
+							componentInChildren.material.color = LocalDamageDisplay.chamsPlayerColor;
+						}
+						else
+						{
+							componentInChildren.material.color = LocalDamageDisplay.chamsNPCColor;
+						}
+					}
+					else
+					{
+						componentInChildren.material.shader = this.originalCharacterShaders[character];
+					}
+				}
+			}
+		}
+	}
+
+	// Token: 0x06002DB7 RID: 11703 RVA: 0x000C0848 File Offset: 0x000BEA48
+	private void RestoreCharacterShaders()
+	{
+		foreach (KeyValuePair<Character, Shader> keyValuePair in this.originalCharacterShaders)
+		{
+			if (keyValuePair.Key != null)
+			{
+				Renderer componentInChildren = keyValuePair.Key.GetComponentInChildren<Renderer>();
+				if (componentInChildren != null)
+				{
+					componentInChildren.material.shader = keyValuePair.Value;
+				}
+			}
+		}
+		this.originalCharacterShaders.Clear();
+	}
+
+	// Token: 0x06002DB8 RID: 11704 RVA: 0x000C08D8 File Offset: 0x000BEAD8
+	private void OnDestroy()
+	{
+		this.CleanupTextures();
+		this.RestoreCharacterShaders();
+		foreach (StructureComponent structureComponent in this.hiddenStructures)
+		{
+			if (structureComponent != null)
+			{
+				structureComponent.gameObject.SetActive(true);
+			}
+		}
+		this.hiddenStructures.Clear();
+		foreach (KeyValuePair<LootableObject, Shader> keyValuePair in this.originalLootableShaders)
+		{
+			if (keyValuePair.Key != null)
+			{
+				Renderer renderer = keyValuePair.Key.GetComponent<Renderer>();
+				if (renderer != null)
+				{
+					renderer.material.shader = keyValuePair.Value;
+				}
+			}
+		}
+		this.originalLootableShaders.Clear();
+	}
+
+	// Token: 0x06002DB9 RID: 11705 RVA: 0x000C09D0 File Offset: 0x000BEBD0
+	private void DrawHeliosBox(float x, float y)
+	{
+		float num = 12f;
+		float num2 = 3f;
+		GUI.color = Color.red;
+		GUI.DrawTexture(new Rect(x - num, y - num2 / 2f, num * 2f, num2), LocalDamageDisplay.grayTexture);
+		GUI.DrawTexture(new Rect(x - num, y + num2 / 2f, num * 2f, num2), LocalDamageDisplay.grayTexture);
+		GUI.DrawTexture(new Rect(x - num2 / 2f, y - num, num2, num * 2f), LocalDamageDisplay.grayTexture);
+		GUI.DrawTexture(new Rect(x + num2 / 2f, y - num, num2, num * 2f), LocalDamageDisplay.grayTexture);
+		GUI.color = Color.white;
+	}
+
+	// Token: 0x06002DBA RID: 11706 RVA: 0x000C0A8C File Offset: 0x000BEC8C
+	private void GetAimPosition(Character localCharacter, Character targetCharacter, ref Vector3 startPosition, ref Vector3 endPosition)
+	{
+		startPosition = localCharacter.transform.position + Vector3.up * 1.5f;
+		CharacterController characterController = targetCharacter.GetComponent<CharacterController>();
+		float num = (characterController != null) ? characterController.height : 2f;
+		endPosition = targetCharacter.origin + Vector3.up * ((this.aimBone == LocalDamageDisplay.AimBoneType.Head) ? (num * 0.9f) : (num * 0.55f));
+	}
+
+	// Token: 0x06002DBB RID: 11707 RVA: 0x000C0B10 File Offset: 0x000BED10
+	private bool IsValidTarget(Character target)
+	{
+		if (target == null)
+		{
+			return false;
+		}
+		TakeDamage takeDamage = target.GetComponent<TakeDamage>();
+		if (takeDamage == null || takeDamage.health <= 0f)
+		{
+			return false;
+		}
+		Vector3 zero = Vector3.zero;
+		Vector3 zero2 = Vector3.zero;
+		this.GetAimPosition(this.component, target, ref zero, ref zero2);
+		float num = Vector3.Distance(zero, zero2);
+		return num <= LocalDamageDisplay.aimbotRange && num <= (float)LocalDamageDisplay.viewDistance && Vector3.Angle((zero2 - zero).normalized, this.component.transform.forward) <= LocalDamageDisplay.aimFOV && (!LocalDamageDisplay.visibleCheck || this.IsTargetVisible(target, zero2));
+	}
+
+	// Token: 0x06002DBC RID: 11708 RVA: 0x000C0BBC File Offset: 0x000BEDBC
+	private void InstantAim(Character target)
+	{
+		if (this.component == null || target == null)
+		{
+			this.isTargetLocked = false;
+			return;
+		}
+		Vector3 zero = Vector3.zero;
+		Vector3 vector = Vector3.zero;
+		this.GetAimPosition(this.component, target, ref zero, ref vector);
+		Rigidbody rigidbody = target.GetComponent<Rigidbody>();
+		if (rigidbody != null)
+		{
+			vector += rigidbody.velocity * this.predictionTime;
+		}
+		if (!LocalDamageDisplay.silentAim)
+		{
+			Quaternion rotation = Quaternion.LookRotation((vector - zero).normalized);
+			this.component.transform.rotation = rotation;
+			this.lockedRotation = rotation;
+			this.isTargetLocked = true;
+			Vector3? vector2 = CameraFX.World2Screen(vector);
+			if (vector2 != null && vector2.Value.z > 0f)
+			{
+				Vector2 vector3 = GUIUtility.ScreenToGUIPoint(vector2.Value);
+				vector3.y = (float)Screen.height - (vector3.y + 1f);
+				this.heliosBoxPos = vector3;
+				return;
+			}
+		}
+		else
+		{
+			Vector3? vector4 = CameraFX.World2Screen(vector);
+			if (vector4 != null && vector4.Value.z > 0f)
+			{
+				Vector2 vector5 = GUIUtility.ScreenToGUIPoint(vector4.Value);
+				vector5.y = (float)Screen.height - (vector5.y + 1f);
+				this.heliosBoxPos = vector5;
+			}
+		}
+	}
+
+	// Token: 0x06002DBD RID: 11709 RVA: 0x000C0D28 File Offset: 0x000BEF28
+	private void NoRecoil()
+	{
+		if (LocalDamageDisplay.noRecoil && this.component != null)
+		{
+			HumanController humanController = this.component.GetComponent<HumanController>();
+			if (humanController != null)
+			{
+				InventoryItem activeItem = humanController.GetComponent<Inventory>()._activeItem;
+				if (activeItem != null && !(activeItem is MeleeWeaponItem<MeleeWeaponDataBlock>))
+				{
+					BulletWeaponItem<BulletWeaponDataBlock> bulletWeaponItem = activeItem as BulletWeaponItem<BulletWeaponDataBlock>;
+					if (bulletWeaponItem != null)
+					{
+						bulletWeaponItem.datablock.bulletRange = 300f;
+						bulletWeaponItem.datablock.recoilPitchMin = 0f;
+						bulletWeaponItem.datablock.recoilPitchMax = 0f;
+						bulletWeaponItem.datablock.recoilYawMin = 0f;
+						bulletWeaponItem.datablock.recoilYawMax = 0f;
+						bulletWeaponItem.datablock.aimSway = 0f;
+						bulletWeaponItem.datablock.aimSwaySpeed = 0f;
+					}
+				}
+				CameraMount componentInChildren = humanController.GetComponentInChildren<CameraMount>();
+				if (componentInChildren != null)
+				{
+					HeadBob headBob = componentInChildren.GetComponent<HeadBob>();
+					if (headBob != null)
+					{
+						headBob.aimRotationScalar = 0f;
+						headBob.viewModelRotationScalar = 0f;
+					}
+				}
+			}
+		}
+	}
+
+	// Token: 0x06002DBE RID: 11710 RVA: 0x000C0E38 File Offset: 0x000BF038
+	private void NoReload()
+	{
+		if (LocalDamageDisplay.noReload && this.component != null)
+		{
+			InventoryItem activeItem = this.component.GetComponent<Inventory>()._activeItem;
+			if (activeItem != null && activeItem is BulletWeaponItem<BulletWeaponDataBlock>)
+			{
+				BulletWeaponItem<BulletWeaponDataBlock> bulletWeaponItem = activeItem as BulletWeaponItem<BulletWeaponDataBlock>;
+				if (bulletWeaponItem.clipAmmo <= 1)
+				{
+					bulletWeaponItem.itemRepresentation.Action(3, 0);
+				}
+			}
+		}
+	}
+
+	// Token: 0x06002DBF RID: 11711 RVA: 0x000C0E94 File Offset: 0x000BF094
+	private void DrawAimbotSettingsWindow(int windowID)
+	{
+		float num = 25f;
+		LocalDamageDisplay.aimbotMode = GUI.Toggle(new Rect(10f, num, 150f, 20f), LocalDamageDisplay.aimbotMode, "Aimbot");
+		num += 25f;
+		this.instantAimMode = GUI.Toggle(new Rect(10f, num, 150f, 20f), this.instantAimMode, "Instant Aim");
+		num += 25f;
+		this.aimBone = (GUI.Toggle(new Rect(10f, num, 150f, 20f), this.aimBone == LocalDamageDisplay.AimBoneType.Head, "Aim at Head") ? LocalDamageDisplay.AimBoneType.Head : LocalDamageDisplay.AimBoneType.Chest);
+		num += 25f;
+		LocalDamageDisplay.randomMode = GUI.Toggle(new Rect(10f, num, 150f, 20f), LocalDamageDisplay.randomMode, "Respect Friends");
+		num += 25f;
+		LocalDamageDisplay.aimPlayers = GUI.Toggle(new Rect(10f, num, 150f, 20f), LocalDamageDisplay.aimPlayers, "Aim Players");
+		num += 25f;
+		LocalDamageDisplay.aimNPCs = GUI.Toggle(new Rect(10f, num, 150f, 20f), LocalDamageDisplay.aimNPCs, "Aim NPCs");
+		num += 25f;
+		LocalDamageDisplay.silentAim = GUI.Toggle(new Rect(10f, num, 150f, 20f), LocalDamageDisplay.silentAim, "Silent Aim");
+		num += 25f;
+		LocalDamageDisplay.autoAim = GUI.Toggle(new Rect(10f, num, 150f, 20f), LocalDamageDisplay.autoAim, "Auto Aim");
+		num += 25f;
+		LocalDamageDisplay.visibleCheck = GUI.Toggle(new Rect(10f, num, 150f, 20f), LocalDamageDisplay.visibleCheck, "Visible Check");
+		num += 25f;
+		GUI.Label(new Rect(10f, num, 150f, 20f), string.Format("Aim Key: {0}", LocalDamageDisplay.aimKeyCode));
+		num += 25f;
+		if (GUI.Button(new Rect(10f, num, 100f, 20f), "Set Key"))
+		{
+			LocalDamageDisplay.setAimKey = false;
+		}
+		num += 25f;
+		GUI.Label(new Rect(10f, num, 150f, 20f), string.Format("Range: {0:F1}m", LocalDamageDisplay.aimbotRange));
+		num += 25f;
+		LocalDamageDisplay.aimbotRange = GUI.HorizontalSlider(new Rect(10f, num, 150f, 20f), LocalDamageDisplay.aimbotRange, 10f, 300f);
+		num += 25f;
+		GUI.Label(new Rect(10f, num, 150f, 20f), string.Format("FOV: {0:F1}", LocalDamageDisplay.aimFOV));
+		num += 25f;
+		LocalDamageDisplay.aimFOV = GUI.HorizontalSlider(new Rect(10f, num, 150f, 20f), LocalDamageDisplay.aimFOV, 10f, 180f);
+		num += 25f;
+		GUI.Label(new Rect(10f, num, 150f, 20f), string.Format("Smoothing: {0:F1}", LocalDamageDisplay.aimSmoothing));
+		num += 25f;
+		LocalDamageDisplay.aimSmoothing = GUI.HorizontalSlider(new Rect(10f, num, 150f, 20f), LocalDamageDisplay.aimSmoothing, 1f, 20f);
+		num += 25f;
+		GUI.DragWindow(new Rect(0f, 0f, this.aimbotSettingsRect.width, 20f));
+	}
+
+	// Token: 0x06002DC0 RID: 11712 RVA: 0x000C123C File Offset: 0x000BF43C
+	private void NoClip()
+	{
+		if (this.characterController.enabled)
+		{
+			this.characterController.enabled = false;
+		}
+		float num = 5f;
+		float num2 = 1f + (float)LocalDamageDisplay.speed / 4f;
+		float num3 = num * num2;
+		if (Input.GetKey(304))
+		{
+			num3 *= 2f;
+		}
+		Vector3 vector = Vector3.zero;
+		vector += base.transform.forward * Input.GetAxis("Vertical");
+		vector += base.transform.right * Input.GetAxis("Horizontal");
+		if (Input.GetKey(32))
+		{
+			vector += Vector3.up;
+		}
+		if (Input.GetKey(306))
+		{
+			vector += Vector3.down;
+		}
+		vector = vector.normalized;
+		base.transform.position += vector * num3 * Time.deltaTime;
+		if (Input.GetMouseButton(1))
+		{
+			float num4 = Input.GetAxis("Mouse X") * 5f;
+			float num5 = Input.GetAxis("Mouse Y") * 5f;
+			Vector3 eulerAngles = base.transform.rotation.eulerAngles;
+			eulerAngles.x -= num5;
+			eulerAngles.y += num4;
+			eulerAngles.x = Mathf.Clamp(eulerAngles.x, -90f, 90f);
+			base.transform.rotation = Quaternion.Euler(eulerAngles);
+		}
+	}
+
+	// Token: 0x06002DC1 RID: 11713 RVA: 0x000C13C4 File Offset: 0x000BF5C4
+	private void DrawUserTab(ref float yPos)
+	{
+		LocalDamageDisplay.fallDamage = GUI.Toggle(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.fallDamage, "Fall Damage");
+		yPos += 25f;
+		LocalDamageDisplay.noClipMode = GUI.Toggle(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.noClipMode, "NoClip (N)");
+		yPos += 25f;
+		if (LocalDamageDisplay.noClipMode)
+		{
+			GUI.Label(new Rect(10f, yPos, 150f, 20f), string.Format("Speed: {0}", LocalDamageDisplay.speed));
+			yPos += 25f;
+			LocalDamageDisplay.speed = Mathf.RoundToInt(GUI.HorizontalSlider(new Rect(10f, yPos, 150f, 20f), (float)LocalDamageDisplay.speed, 1f, 10f));
+			yPos += 25f;
+		}
+		LocalDamageDisplay.wallHackMode = GUI.Toggle(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.wallHackMode, "WallHack");
+		yPos += 25f;
+		if (LocalDamageDisplay.wallHackMode && GUI.Button(new Rect(10f, yPos, 100f, 20f), "Settings"))
+		{
+			this.drawWallHackSettingsTab = !this.drawWallHackSettingsTab;
+		}
+		yPos += 25f;
+		LocalDamageDisplay.showCrosshair = GUI.Toggle(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.showCrosshair, "Crosshair");
+		yPos += 25f;
+		LocalDamageDisplay.showFps = GUI.Toggle(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.showFps, "Show FPS");
+		yPos += 25f;
+		LocalDamageDisplay.noRecoil = GUI.Toggle(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.noRecoil, "No Recoil");
+		yPos += 25f;
+		LocalDamageDisplay.noReload = GUI.Toggle(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.noReload, "No Reload");
+		yPos += 25f;
+		LocalDamageDisplay.autoWood = GUI.Toggle(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.autoWood, "Auto Wood");
+		yPos += 25f;
+		LocalDamageDisplay.autoStone = GUI.Toggle(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.autoStone, "Auto Stone");
+		yPos += 25f;
+		LocalDamageDisplay.autoWoodPile = GUI.Toggle(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.autoWoodPile, "Auto WoodPile");
+		yPos += 25f;
+	}
+
+	// Token: 0x06002DC2 RID: 11714 RVA: 0x000C169C File Offset: 0x000BF89C
+	private void DrawRadarTab(ref float yPos)
+	{
+		LocalDamageDisplay.threeDRadarMode = GUI.Toggle(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.threeDRadarMode, "3D Radar");
+		yPos += 25f;
+		if (GUI.Button(new Rect(10f, yPos, 100f, 20f), "ESP Settings"))
+		{
+			LocalDamageDisplay.draw3DRadarTab = !LocalDamageDisplay.draw3DRadarTab;
+		}
+		yPos += 25f;
+		LocalDamageDisplay.itemESP = GUI.Toggle(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.itemESP, "Item ESP");
+		yPos += 25f;
+		LocalDamageDisplay.autoLoot = GUI.Toggle(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.autoLoot, "Auto Loot");
+		yPos += 25f;
+		if (LocalDamageDisplay.autoLoot)
+		{
+			GUI.Label(new Rect(10f, yPos, 150f, 20f), string.Format("Range: {0:F1}m", LocalDamageDisplay.autoLootRange));
+			yPos += 25f;
+			LocalDamageDisplay.autoLootRange = GUI.HorizontalSlider(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.autoLootRange, 1f, 20f);
+			yPos += 25f;
+		}
+		LocalDamageDisplay.raidESPMode = GUI.Toggle(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.raidESPMode, "Raid ESP");
+		yPos += 25f;
+		if (LocalDamageDisplay.raidESPMode)
+		{
+			GUI.Label(new Rect(20f, yPos, 150f, 20f), "Raid ESP Color");
+			yPos += 25f;
+			if (GUI.Button(new Rect(20f, yPos, 100f, 20f), "Gray"))
+			{
+				LocalDamageDisplay.raidESPColor = new Color(0.5f, 0.5f, 0.5f, 0.3f);
+				if (LocalDamageDisplay.raidESPMode)
+				{
+					this.WallHack();
+				}
+			}
+			if (GUI.Button(new Rect(130f, yPos, 100f, 20f), "Blue"))
+			{
+				LocalDamageDisplay.raidESPColor = new Color(0f, 0f, 1f, 0.3f);
+				if (LocalDamageDisplay.raidESPMode)
+				{
+					this.WallHack();
+				}
+			}
+			yPos += 25f;
+		}
+		LocalDamageDisplay.chamsMode = GUI.Toggle(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.chamsMode, "Chams");
+		yPos += 25f;
+		if (LocalDamageDisplay.chamsMode)
+		{
+			LocalDamageDisplay.chamsPlayers = GUI.Toggle(new Rect(20f, yPos, 150f, 20f), LocalDamageDisplay.chamsPlayers, "Chams Players");
+			yPos += 25f;
+			LocalDamageDisplay.chamsNPCs = GUI.Toggle(new Rect(20f, yPos, 150f, 20f), LocalDamageDisplay.chamsNPCs, "Chams NPCs");
+			yPos += 25f;
+			if (LocalDamageDisplay.chamsPlayers)
+			{
+				GUI.Label(new Rect(20f, yPos, 150f, 20f), "Player Chams Color");
+				yPos += 25f;
+				if (GUI.Button(new Rect(20f, yPos, 100f, 20f), "White"))
+				{
+					LocalDamageDisplay.chamsPlayerColor = Color.white;
+					this.needsChamsUpdate = true;
+				}
+				if (GUI.Button(new Rect(130f, yPos, 100f, 20f), "Bright Cyan"))
+				{
+					LocalDamageDisplay.chamsPlayerColor = new Color(0f, 1f, 1f);
+					this.needsChamsUpdate = true;
+				}
+				yPos += 25f;
+			}
+			if (LocalDamageDisplay.chamsNPCs)
+			{
+				GUI.Label(new Rect(20f, yPos, 150f, 20f), "NPC Chams Color");
+				yPos += 25f;
+				if (GUI.Button(new Rect(20f, yPos, 100f, 20f), "Magenta"))
+				{
+					LocalDamageDisplay.chamsNPCColor = new Color(1f, 0f, 1f);
+					this.needsChamsUpdate = true;
+				}
+				if (GUI.Button(new Rect(130f, yPos, 100f, 20f), "Bright Green"))
+				{
+					LocalDamageDisplay.chamsNPCColor = new Color(0f, 1f, 0f);
+					this.needsChamsUpdate = true;
+				}
+				yPos += 25f;
+			}
+		}
+		LocalDamageDisplay.nameList = GUI.Toggle(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.nameList, "Show Names");
+		yPos += 25f;
+		LocalDamageDisplay.myCoord = GUI.Toggle(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.myCoord, "Show Coordinates");
+		yPos += 25f;
+		GUI.Label(new Rect(10f, yPos, 150f, 20f), string.Format("View Distance: {0}", LocalDamageDisplay.viewDistance));
+		yPos += 25f;
+		LocalDamageDisplay.viewDistance = Mathf.RoundToInt(GUI.HorizontalSlider(new Rect(10f, yPos, 150f, 20f), (float)LocalDamageDisplay.viewDistance, 50f, 1000f));
+		yPos += 25f;
+		LocalDamageDisplay.showHealthBarsPlayers = GUI.Toggle(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.showHealthBarsPlayers, "Player Health");
+		yPos += 25f;
+		LocalDamageDisplay.showHealthBarsNPCs = GUI.Toggle(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.showHealthBarsNPCs, "NPC Health");
+		yPos += 25f;
+		LocalDamageDisplay.showESPBoxPlayers = GUI.Toggle(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.showESPBoxPlayers, "Player Box");
+		yPos += 25f;
+		LocalDamageDisplay.showESPBoxNPCs = GUI.Toggle(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.showESPBoxNPCs, "NPC Box");
+		yPos += 25f;
+		LocalDamageDisplay.daytimeMode = GUI.Toggle(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.daytimeMode, "Daytime Mode");
+		yPos += 25f;
+		if (LocalDamageDisplay.daytimeMode)
+		{
+			GUI.Label(new Rect(10f, yPos, 150f, 20f), string.Format("Time: {0:F1}", LocalDamageDisplay.daytimeValue));
+			yPos += 25f;
+			LocalDamageDisplay.daytimeValue = GUI.HorizontalSlider(new Rect(10f, yPos, 150f, 20f), LocalDamageDisplay.daytimeValue, 6f, 18f);
+			yPos += 25f;
+		}
+	}
+
+	// Token: 0x06002DC3 RID: 11715 RVA: 0x00023C34 File Offset: 0x00021E34
+	private void DrawAimbotTab(ref float yPos)
+	{
+		if (GUI.Button(new Rect(10f, yPos, 100f, 20f), "Aimbot Settings"))
+		{
+			this.drawAimbotSettingsTab = !this.drawAimbotSettingsTab;
+		}
+		yPos += 25f;
+	}
+
+	// Token: 0x06002DC4 RID: 11716 RVA: 0x000C1D7C File Offset: 0x000BFF7C
+	private void DrawConsoleTab(ref float yPos)
+	{
+		if (GUI.Button(new Rect(10f, yPos, 100f, 20f), "Toggle Grass"))
+		{
+			LocalDamageDisplay.grass = !LocalDamageDisplay.grass;
+			if (!this.consoleError)
+			{
+				ConsoleWindow.singleton.RunCommand("grass.on " + (LocalDamageDisplay.grass ? "true" : "false"));
+			}
+		}
+		yPos += 25f;
+		if (GUI.Button(new Rect(10f, yPos, 100f, 20f), "Suicide"))
+		{
+			LocalDamageDisplay.hackMenu = false;
+			if (!this.consoleError)
+			{
+				ConsoleWindow.singleton.RunCommand("kill");
+			}
+			else if (base.gameObject.GetComponent<TakeDamage>() != null && !(base.gameObject.GetComponent<IDMain>() != null))
+			{
+				Debug.LogWarning("IDMain not found on gameObject. Cannot execute Kill.");
+			}
+		}
+		yPos += 25f;
+		GUI.Label(new Rect(10f, yPos, 150f, 20f), string.Format("FOV: {0}", LocalDamageDisplay.level));
+		yPos += 25f;
+		LocalDamageDisplay.level = Mathf.RoundToInt(GUI.HorizontalSlider(new Rect(10f, yPos, 150f, 20f), (float)LocalDamageDisplay.level, 60f, 120f));
+		yPos += 25f;
+	}
+
+	// Token: 0x06002DC5 RID: 11717 RVA: 0x00023C71 File Offset: 0x00021E71
+	private void DrawRaidESP()
+	{
+		if (!LocalDamageDisplay.raidESPMode || this.component == null)
+		{
+			return;
+		}
+		this.WallHack();
+	}
+
+	// Token: 0x06002DC6 RID: 11718 RVA: 0x000C1EE4 File Offset: 0x000C00E4
+	private void AutoGather()
+	{
+		if ((LocalDamageDisplay.autoWood || LocalDamageDisplay.autoStone || LocalDamageDisplay.autoWoodPile) && this.component != null)
+		{
+			Character character = this.component;
+			Inventory inventory = character.GetComponent<Inventory>();
+			if (inventory != null)
+			{
+				MeleeWeaponItem<MeleeWeaponDataBlock> meleeWeaponItem = inventory._activeItem as MeleeWeaponItem<MeleeWeaponDataBlock>;
+				if (meleeWeaponItem != null && Time.time - this.lastAttackTime > meleeWeaponItem.datablock.fireRate)
+				{
+					this.lastAttackTime = Time.time;
+					ItemRepresentation itemRepresentation = meleeWeaponItem.itemRepresentation;
+					float num = meleeWeaponItem.datablock.range * 5f;
+					RaycastHit2 raycastHit;
+					bool flag = Physics2.Raycast2(character.eyesRay, ref raycastHit, num, -1);
+					Vector3 point = raycastHit.point;
+					if (flag)
+					{
+						IDMain idMain = raycastHit.idMain;
+						if (idMain != null)
+						{
+							string text = idMain.gameObject.name.ToLower().Replace(" ", "");
+							Debug.Log("Hit object: " + text);
+							bool flag2 = text.Contains("tree") && LocalDamageDisplay.autoWood;
+							bool flag3 = (text.Contains("ore1") || text.Contains("ore2") || text.Contains("ore3") || text.Contains("rock") || text.Contains("stone")) && LocalDamageDisplay.autoStone;
+							bool flag4 = (text.Contains("woodpile") || text.Contains("wood_pile") || text.Contains("pile")) && LocalDamageDisplay.autoWoodPile;
+							if (flag3)
+							{
+								Debug.Log("Auto Stone triggered for: " + text);
+							}
+							if (flag4)
+							{
+								Debug.Log("Auto WoodPile triggered for: " + text);
+							}
+							if (flag2 || flag3 || flag4)
+							{
+								itemRepresentation.Action(3, 0);
+								BitStream bitStream = new BitStream(false);
+								bitStream.WriteBoolean(true);
+								bitStream.Write<NetEntityID>(NetEntityID.Get(idMain), new object[0]);
+								bitStream.WriteVector3(point);
+								bitStream.WriteBoolean(false);
+								itemRepresentation.ActionStream(1, 0, bitStream);
+								return;
+							}
+						}
+					}
+					else
+					{
+						itemRepresentation.Action(3, 0);
+						BitStream bitStream2 = new BitStream(false);
+						bitStream2.WriteBoolean(false);
+						bitStream2.WriteVector3(Vector3.zero);
+						bitStream2.WriteBoolean(true);
+						itemRepresentation.ActionStream(1, 0, bitStream2);
+					}
+				}
+			}
+		}
+	}
+
+	// Token: 0x04001732 RID: 5938
+	private Texture2D damageOverlay;
+
+	// Token: 0x04001733 RID: 5939
+	private Texture2D damageOverlay2;
+
+	// Token: 0x04001734 RID: 5940
+	private float lastHealthPercent;
+
+	// Token: 0x04001735 RID: 5941
+	private BobEffect takeDamageBob;
+
+	// Token: 0x04001736 RID: 5942
+	private BobEffect meleeBob;
+
+	// Token: 0x04001737 RID: 5943
+	private float lastTakeDamageTime;
+
+	// Token: 0x04001738 RID: 5944
+	private int lastShowFlags;
+
+	// Token: 0x04001739 RID: 5945
+	private static bool hackMenu;
+
+	// Token: 0x0400173A RID: 5946
+	private List<LootableObject> purObjectsLootables;
+
+	// Token: 0x0400173B RID: 5947
+	private List<SleepingAvatar> purObjectsSleepers;
+
+	// Token: 0x0400173C RID: 5948
+	private static bool purESPLootables;
+
+	// Token: 0x0400173D RID: 5949
+	private static bool purESPSleepers;
+
+	// Token: 0x0400173E RID: 5950
+	private List<Character> purObjects;
+
+	// Token: 0x0400173F RID: 5951
+	private static bool purESPResources;
+
+	// Token: 0x04001740 RID: 5952
+	private List<ResourceObject> purObjectsResources;
+
+	// Token: 0x04001741 RID: 5953
+	private static bool radarTab;
+
+	// Token: 0x04001742 RID: 5954
+	private static bool threeDRadarMode;
+
+	// Token: 0x04001743 RID: 5955
+	private static bool aimbotTab;
+
+	// Token: 0x04001744 RID: 5956
+	private static bool consoleTab;
+
+	// Token: 0x04001745 RID: 5957
+	private static bool userTab;
+
+	// Token: 0x04001746 RID: 5958
+	private static bool draw3DRadarTab;
+
+	// Token: 0x04001747 RID: 5959
+	private static bool purESPPlayersandNPCs;
+
+	// Token: 0x04001748 RID: 5960
+	private static bool fallDamage;
+
+	// Token: 0x04001749 RID: 5961
+	private static bool aimbotMode;
+
+	// Token: 0x0400174A RID: 5962
+	private static bool grass;
+
+	// Token: 0x0400174B RID: 5963
+	private static int speed;
+
+	// Token: 0x0400174C RID: 5964
+	private static bool randomMode;
+
+	// Token: 0x0400174D RID: 5965
+	private static bool nameList;
+
+	// Token: 0x0400174E RID: 5966
+	private static bool myCoord;
+
+	// Token: 0x0400174F RID: 5967
+	private static int level;
+
+	// Token: 0x04001750 RID: 5968
+	private static string newName;
+
+	// Token: 0x04001751 RID: 5969
+	private static bool purESPPlayers;
+
+	// Token: 0x04001752 RID: 5970
+	private static bool aimNPCs;
+
+	// Token: 0x04001753 RID: 5971
+	private static bool daytimeMode;
+
+	// Token: 0x04001754 RID: 5972
+	private static float daytimeValue;
+
+	// Token: 0x04001755 RID: 5973
+	private static bool showHealthBarsPlayers;
+
+	// Token: 0x04001756 RID: 5974
+	private static bool showHealthBarsNPCs;
+
+	// Token: 0x04001757 RID: 5975
+	private static bool showESPBoxPlayers;
+
+	// Token: 0x04001758 RID: 5976
+	private static bool showESPBoxNPCs;
+
+	// Token: 0x04001759 RID: 5977
+	private static Texture2D redHealthBarTexture;
+
+	// Token: 0x0400175A RID: 5978
+	private static Texture2D greenHealthBarTexture;
+
+	// Token: 0x0400175B RID: 5979
+	private static Texture2D grayTexture;
+
+	// Token: 0x0400175C RID: 5980
+	private Rect menuRect;
+
+	// Token: 0x0400175D RID: 5981
+	private Rect espMenuRect;
+
+	// Token: 0x0400175E RID: 5982
+	private Vector2 scrollPosition;
+
+	// Token: 0x0400175F RID: 5983
+	private static int viewDistance;
+
+	// Token: 0x04001760 RID: 5984
+	private FallDamage fallDamageComponent;
+
+	// Token: 0x04001761 RID: 5985
+	private bool fallDamageError;
+
+	// Token: 0x04001762 RID: 5986
+	private bool daytimeError;
+
+	// Token: 0x04001763 RID: 5987
+	private bool consoleError;
+
+	// Token: 0x04001764 RID: 5988
+	private List<string> friendList;
+
+	// Token: 0x04001765 RID: 5989
+	private static bool showFOV;
+
+	// Token: 0x04001766 RID: 5990
+	private static Texture2D fovCircleTexture;
+
+	// Token: 0x04001767 RID: 5991
+	private static Texture2D fovInnerCircleTexture;
+
+	// Token: 0x04001768 RID: 5992
+	private static float aimSmoothing;
+
+	// Token: 0x04001769 RID: 5993
+	private static bool aimPlayers;
+
+	// Token: 0x0400176A RID: 5994
+	private LocalDamageDisplay.LockButtonType aimKey;
+
+	// Token: 0x0400176B RID: 5995
+	private LocalDamageDisplay.AimBoneType aimBone;
+
+	// Token: 0x0400176C RID: 5996
+	private static float aimFOV;
+
+	// Token: 0x0400176D RID: 5997
+	private float updateInterval;
+
+	// Token: 0x0400176E RID: 5998
+	private float nextUpdateTime;
+
+	// Token: 0x0400176F RID: 5999
+	private Dictionary<Character, Vector2> cachedScreenPositions;
+
+	// Token: 0x04001770 RID: 6000
+	private Dictionary<Character, float> visibilityCache;
+
+	// Token: 0x04001771 RID: 6001
+	private float visibilityCheckInterval;
+
+	// Token: 0x04001772 RID: 6002
+	private float fpsUpdateInterval;
+
+	// Token: 0x04001773 RID: 6003
+	private static Texture2D crosshairTexture;
+
+	// Token: 0x04001774 RID: 6004
+	private static bool showCrosshair;
+
+	// Token: 0x04001775 RID: 6005
+	private static bool showFps;
+
+	// Token: 0x04001776 RID: 6006
+	private static bool itemESP;
+
+	// Token: 0x04001777 RID: 6007
+	private static bool autoLoot;
+
+	// Token: 0x04001778 RID: 6008
+	private static float autoLootRange;
+
+	// Token: 0x04001779 RID: 6009
+	private List<ItemPickup> purItems;
+
+	// Token: 0x0400177A RID: 6010
+	private Character component;
+
+	// Token: 0x0400177B RID: 6011
+	private static bool wallHackMode;
+
+	// Token: 0x0400177C RID: 6012
+	private static bool noClipMode;
+
+	// Token: 0x0400177D RID: 6013
+	private CharacterController characterController;
+
+	// Token: 0x0400177E RID: 6014
+	private bool wallHackError;
+
+	// Token: 0x0400177F RID: 6015
+	private List<StructureComponent> purStructures;
+
+	// Token: 0x04001780 RID: 6016
+	private Rect wallHackSettingsRect;
+
+	// Token: 0x04001781 RID: 6017
+	private bool drawWallHackSettingsTab;
+
+	// Token: 0x04001782 RID: 6018
+	private static bool hideWalls;
+
+	// Token: 0x04001783 RID: 6019
+	private static bool hideDoors;
+
+	// Token: 0x04001784 RID: 6020
+	private static bool hideCeilings;
+
+	// Token: 0x04001785 RID: 6021
+	private static bool hideFoundations;
+
+	// Token: 0x04001786 RID: 6022
+	private List<StructureComponent> hiddenStructures;
+
+	// Token: 0x04001787 RID: 6023
+	private Dictionary<StructureComponent, Shader> originalShaders;
+
+	// Token: 0x04001788 RID: 6024
+	private static bool chamsPlayers;
+
+	// Token: 0x04001789 RID: 6025
+	private static bool chamsNPCs;
+
+	// Token: 0x0400178A RID: 6026
+	private Dictionary<Character, Shader> originalCharacterShaders;
+
+	// Token: 0x0400178B RID: 6027
+	private bool lastChamsPlayers;
+
+	// Token: 0x0400178C RID: 6028
+	private bool lastChamsNPCs;
+
+	// Token: 0x0400178D RID: 6029
+	private bool needsChamsUpdate;
+
+	// Token: 0x0400178E RID: 6030
+	private Vector2 heliosBoxPos;
+
+	// Token: 0x0400178F RID: 6031
+	private KeyCode lastPressedKey;
+
+	// Token: 0x04001790 RID: 6032
+	private float nextFpsUpdateTime;
+
+	// Token: 0x04001791 RID: 6033
+	private float fps;
+
+	// Token: 0x04001792 RID: 6034
+	private static bool silentAim;
+
+	// Token: 0x04001793 RID: 6035
+	private static bool autoAim;
+
+	// Token: 0x04001794 RID: 6036
+	private static bool visibleCheck = true;
+
+	// Token: 0x04001795 RID: 6037
+	private static KeyCode aimKeyCode = 324;
+
+	// Token: 0x04001796 RID: 6038
+	private static bool setAimKey = true;
+
+	// Token: 0x04001797 RID: 6039
+	private bool isZooming;
+
+	// Token: 0x04001798 RID: 6040
+	private float zoomFOV;
+
+	// Token: 0x04001799 RID: 6041
+	private float normalFOV;
+
+	// Token: 0x0400179A RID: 6042
+	private Camera mainCamera;
+
+	// Token: 0x0400179B RID: 6043
+	private bool instantAimMode = true;
+
+	// Token: 0x0400179C RID: 6044
+	private float predictionTime = 0.1f;
+
+	// Token: 0x0400179D RID: 6045
+	private Character currentTarget;
+
+	// Token: 0x0400179E RID: 6046
+	private float targetSwitchCooldown = 0.2f;
+
+	// Token: 0x0400179F RID: 6047
+	private float lastTargetSwitchTime;
+
+	// Token: 0x040017A0 RID: 6048
+	private bool isTargetLocked;
+
+	// Token: 0x040017A1 RID: 6049
+	private Quaternion lockedRotation;
+
+	// Token: 0x040017A2 RID: 6050
+	private static float aimbotRange;
+
+	// Token: 0x040017A3 RID: 6051
+	private static bool noRecoil;
+
+	// Token: 0x040017A4 RID: 6052
+	private static bool noReload;
+
+	// Token: 0x040017A5 RID: 6053
+	private Rect aimbotSettingsRect;
+
+	// Token: 0x040017A6 RID: 6054
+	private bool drawAimbotSettingsTab;
+
+	// Token: 0x040017A7 RID: 6055
+	private Shader raidESPShader;
+
+	// Token: 0x040017A8 RID: 6056
+	private Shader shaderStandart;
+
+	// Token: 0x040017A9 RID: 6057
+	private Shader shaderStandart1;
+
+	// Token: 0x040017AA RID: 6058
+	private Shader shaderStandart2;
+
+	// Token: 0x040017AB RID: 6059
+	private static bool raidESPMode;
+
+	// Token: 0x040017AC RID: 6060
+	private Dictionary<LootableObject, Shader> originalLootableShaders = new Dictionary<LootableObject, Shader>();
+
+	// Token: 0x040017AD RID: 6061
+	private static bool chamsMode = false;
+
+	// Token: 0x040017AE RID: 6062
+	private static Color chamsPlayerColor = Color.green;
+
+	// Token: 0x040017AF RID: 6063
+	private static Color chamsNPCColor = Color.red;
+
+	// Token: 0x040017B0 RID: 6064
+	private bool lastChamsMode;
+
+	// Token: 0x040017B1 RID: 6065
+	private static Color raidESPColor = new Color(0.5f, 0.5f, 0.5f, 0.5f);
+
+	// Token: 0x040017B2 RID: 6066
+	private bool lastRaidESPMode;
+
+	// Token: 0x040017B3 RID: 6067
+	private List<LootableObject> hiddenLootables;
+
+	// Token: 0x040017B4 RID: 6068
+	private bool lastWallHackMode;
+
+	// Token: 0x040017B5 RID: 6069
+	private bool lastHideWalls;
+
+	// Token: 0x040017B6 RID: 6070
+	private bool lastHideDoors;
+
+	// Token: 0x040017B7 RID: 6071
+	private bool lastHideCeilings;
+
+	// Token: 0x040017B8 RID: 6072
+	private bool lastHideFoundations;
+
+	// Token: 0x040017B9 RID: 6073
+	private static bool autoWood = false;
+
+	// Token: 0x040017BA RID: 6074
+	private float lastAttackTime;
+
+	// Token: 0x040017BB RID: 6075
+	private static bool autoStone = false;
+
+	// Token: 0x040017BC RID: 6076
+	private static bool autoWoodPile = false;
+
+	// Token: 0x0200055A RID: 1370
+	private struct ESPData
+	{
+		// Token: 0x06002DC7 RID: 11719 RVA: 0x00023C8F File Offset: 0x00021E8F
+		public ESPData(Character character, Vector2 position, int distance, string text, bool isPlayer)
+		{
+			this.character = character;
+			this.position = position;
+			this.distance = distance;
+			this.text = text;
+			this.isPlayer = isPlayer;
+		}
+
+		// Token: 0x040017BD RID: 6077
+		public Character character;
+
+		// Token: 0x040017BE RID: 6078
+		public Vector2 position;
+
+		// Token: 0x040017BF RID: 6079
+		public int distance;
+
+		// Token: 0x040017C0 RID: 6080
+		public string text;
+
+		// Token: 0x040017C1 RID: 6081
+		public bool isPlayer;
+	}
+
+	// Token: 0x0200055B RID: 1371
+	public enum LockButtonType
+	{
+		// Token: 0x040017C3 RID: 6083
+		LeftClick,
+		// Token: 0x040017C4 RID: 6084
+		RightClick,
+		// Token: 0x040017C5 RID: 6085
+		Shift
+	}
+
+	// Token: 0x0200055C RID: 1372
+	public enum AimBoneType
+	{
+		// Token: 0x040017C7 RID: 6087
+		Head,
+		// Token: 0x040017C8 RID: 6088
+		Chest
+	}
+}

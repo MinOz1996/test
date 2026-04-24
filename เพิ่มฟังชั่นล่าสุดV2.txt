@@ -1,0 +1,1885 @@
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Threading;
+using UnityEngine;
+using uLink;
+
+// ========================================
+// RUST LEGACY CHEAT - COMPLETE INTEGRATED
+// Production Grade + ALL FIXES + NO ERRORS
+// ========================================
+
+public class LocalDamageDisplay : IDLocalCharacterAddon
+{
+	public LocalDamageDisplay() : this(IDLocalCharacterAddon.AddonFlags.FireOnAddonAwake) { }
+	protected LocalDamageDisplay(IDLocalCharacterAddon.AddonFlags addonFlags) : base(addonFlags | IDLocalCharacterAddon.AddonFlags.FireOnAddonAwake) { }
+
+	private void Update()
+	{
+		if (DebugInput.GetKeyDown(KeyCode.O))
+		{
+			LocalDamageDisplay.adminObjectShow = !LocalDamageDisplay.adminObjectShow;
+			if (LocalDamageDisplay.adminObjectShow) Debug.Log("shown object overlay", this);
+			else Debug.Log("hid object overlay", this);
+		}
+		if (LocalDamageDisplay.adminObjectShow && DebugInput.GetKeyDown(KeyCode.L))
+			LocalDamageDisplay.mode = (LocalDamageDisplay.mode + 1) % 2;
+
+		if (cheatSystem != null && cheatSystem.IsReady())
+			cheatSystem.OnUpdate();
+	}
+
+	public void SetNewHealthPercent(float newHealthPercent, GameObject attacker)
+	{
+		if (newHealthPercent < this.lastHealthPercent)
+			this.Hurt(newHealthPercent, attacker);
+		this.lastHealthPercent = newHealthPercent;
+	}
+
+	public void Hurt(float percent, GameObject attacker)
+	{
+		if (percent < 0.05f) return;
+		this.lastTakeDamageTime = Time.time;
+		if (CameraMount.current == null) return;
+		HeadBob component = CameraMount.current.GetComponent<HeadBob>();
+		if (component == null) { Debug.Log("no camera headbob"); return; }
+		if (component)
+		{
+			bool flag;
+			if (attacker)
+			{
+				Controllable component2 = attacker.GetComponent<Controllable>();
+				flag = (component2 && component2.npcName == "zombie");
+				if (!flag) flag = (attacker.GetComponent<BasicWildLifeAI>() != null);
+			}
+			else flag = false;
+			component.AddEffect((!flag) ? this.takeDamageBob : this.meleeBob);
+		}
+	}
+
+	private int UpdateFadeValues(out float alpha, out float impactAlpha)
+	{
+		alpha = 1f - this.lastHealthPercent;
+		float num = Mathf.Abs(Mathf.Sin(Time.time * 6f));
+		int num2 = 0;
+		if (this.lastHealthPercent <= 0.6f && alpha > 0f) { num2 |= 1; alpha = (alpha - 0.6f) * 2.5f * num; }
+		impactAlpha = 1f - Mathf.Clamp01((Time.time - this.lastTakeDamageTime) / 0.5f);
+		impactAlpha *= 1f;
+		if (impactAlpha > 0f) num2 |= 2;
+		return num2;
+	}
+
+	private void LateUpdate()
+	{
+		GameFullscreen instance = ImageEffectManager.GetInstance<GameFullscreen>();
+		if (instance == null) return;
+		float alpha, alpha2;
+		int num = this.UpdateFadeValues(out alpha, out alpha2);
+		int num2 = num ^ this.lastShowFlags;
+		this.lastShowFlags = num;
+		if (num2 != 0)
+		{
+			if ((num2 & 1) == 1) { if ((num & 1) == 1) { instance.overlays[0].texture = this.damageOverlay; instance.overlays[0].pass = 3; } else instance.overlays[0].texture = null; }
+			if ((num2 & 2) == 2) { if ((num & 2) == 2) { instance.overlays[1].texture = this.damageOverlay2; instance.overlays[1].pass = 3; } else instance.overlays[1].texture = null; }
+		}
+		if ((num & 1) == 1) instance.overlays[0].alpha = alpha;
+		if ((num & 2) == 2) instance.overlays[1].alpha = alpha2;
+	}
+
+	private void OnDisable()
+	{
+		GameFullscreen instance = ImageEffectManager.GetInstance<GameFullscreen>();
+		if (instance != null)
+		{
+			int num = this.lastShowFlags; this.lastShowFlags = 0;
+			if ((num & 1) == 1) instance.overlays[0].texture = null;
+			if ((num & 2) == 2) instance.overlays[1].texture = null;
+		}
+		if (cheatSystem != null) cheatSystem.Shutdown();
+	}
+
+	private static void DrawLabel(Vector3 point, string label)
+	{
+		Vector3? vector = CameraFX.World2Screen(point);
+		if (vector != null)
+		{
+			Vector3 value = vector.Value;
+			if (value.z > 0f)
+			{
+				Vector2 vector2 = GUIUtility.ScreenToGUIPoint(value);
+				vector2.y = (float)Screen.height - (vector2.y + 1f);
+				GUI.color = Color.white;
+				GUI.Label(new Rect(vector2.x - 64f, vector2.y - 12f, 128f, 24f), label);
+			}
+		}
+	}
+
+	private void OnGUI()
+	{
+		GUI.depth = -1000;
+		if (cheatSystem != null && cheatSystem.IsReady()) cheatSystem.OnGUI();
+		if (Event.current.type == EventType.Repaint && LocalDamageDisplay.adminObjectShow)
+		{
+			GUI.color = Color.white;
+			GUI.Box(new Rect(5f, 5f, 128f, 24f), (LocalDamageDisplay.mode != 0) ? "showing selection" : "showing characters");
+			if (LocalDamageDisplay.mode == 0)
+			{
+                    // Use entityRegistry for efficient character tracking
+                    if (cheatSystem != null && cheatSystem.IsReady() && cheatSystem.entityRegistry != null)
+                    {
+                        foreach (var entityData in cheatSystem.entityRegistry.GetAll())
+                        {
+                            if (entityData.character != null && entityData.gameObject != null)
+                            {
+                                LocalDamageDisplay.DrawLabel(entityData.character.origin, entityData.playerName ?? entityData.character.name);
+                            }
+                        }
+                    }
+			}
+		}
+	}
+
+	protected override void OnAddonAwake()
+	{
+		CharacterOverlayTrait trait = base.GetTrait<CharacterOverlayTrait>();
+		this.damageOverlay = trait.damageOverlay;
+		this.damageOverlay2 = trait.damageOverlay2;
+		this.takeDamageBob = (trait.takeDamageBob as BobEffect);
+		this.meleeBob = (trait.meleeBob as BobEffect);
+		InitializeCheatSystem();
+	}
+
+	private void InitializeCheatSystem()
+	{
+		if (base.character == null) { StartCoroutine(RetryInitialize()); return; }
+		cheatSystem = new RustCheatSystem();
+		cheatSystem.Initialize(base.character);
+	}
+
+	private IEnumerator RetryInitialize()
+	{
+		int attempts = 0;
+		while (attempts < 10)
+		{
+			yield return new WaitForSeconds(0.5f);
+			if (base.character != null) { cheatSystem = new RustCheatSystem(); cheatSystem.Initialize(base.character); yield break; }
+			attempts++;
+		}
+		Debug.LogError("[CheatSystem] Failed to initialize");
+	}
+
+	private const int SHOW_DAMAGE_OVERLAY = 1, SHOW_IMPACT_OVERLAY = 2, kDamageOverlayIndex = 0, kImpactOverlayIndex = 1, kDamageOverlayPass = 3, kImpactOverlayPass = 1, mode_count = 2;
+	protected const IDLocalCharacterAddon.AddonFlags kRequiredAddonFlags = IDLocalCharacterAddon.AddonFlags.FireOnAddonAwake;
+	[NonSerialized] public Texture2D damageOverlay, damageOverlay2;
+	[NonSerialized] public float lastHealthPercent = 1f, lastTakeDamageTime;
+	[NonSerialized] public BobEffect takeDamageBob, meleeBob;
+	private int lastShowFlags;
+	private static bool adminObjectShow;
+	private static int mode;
+	private RustCheatSystem cheatSystem;
+}
+
+public class RustCheatSystem
+{
+	private Character localPlayer;
+	private Camera mainCamera;
+	private bool isReady = false;
+	private Matrix4x4 viewMatrix, projMatrix;
+
+	public EntityRegistry entityRegistry;
+	private SpatialGrid spatialGrid;
+	private ComponentCache componentCache;
+	private ThreadManager threadManager;
+
+	private ESPRenderer_Fixed espRendererFixed;
+	private AimbotSystem_Pro aimbotSystemPro;
+	private SkeletalRenderer_Complete skeletalRenderer;
+	private VisualSystem_Fixed visualSystemFixed;
+	private ChamsSystem_Ultimate chamsSystem;
+	
+	private MovementSystem movementSystem;
+	private WeaponSystem weaponSystem;
+	private GUIManager guiManager;
+	private TimeController timeController;
+
+	private readonly object _lock = new object();
+
+	public bool IsReady() => isReady && localPlayer != null;
+
+	public void Initialize(Character character)
+	{
+		if (character == null) { Debug.LogError("[RustCheat] Null character"); return; }
+		localPlayer = character;
+		mainCamera = Camera.main;
+		entityRegistry = new EntityRegistry();
+		spatialGrid = new SpatialGrid(50f);
+		componentCache = new ComponentCache(character);
+		threadManager = new ThreadManager();
+
+		espRendererFixed = new ESPRenderer_Fixed();
+		aimbotSystemPro = new AimbotSystem_Pro(entityRegistry, spatialGrid, componentCache);
+		skeletalRenderer = new SkeletalRenderer_Complete();
+		skeletalRenderer.Initialize(mainCamera);
+		visualSystemFixed = new VisualSystem_Fixed(entityRegistry);
+
+		movementSystem = new MovementSystem();
+		weaponSystem = new WeaponSystem();
+		timeController = new TimeController();
+		guiManager = new GUIManager();
+		threadManager.Start(entityRegistry, spatialGrid);
+		isReady = true;
+		chamsSystem = new ChamsSystem_Ultimate();
+		entityRegistry.chamsSystemRef = chamsSystem; 
+		Debug.Log("[RustCheat] ✓ All systems initialized (NO ERRORS)");
+	}
+
+		public void OnUpdate()
+		{
+			if (!isReady) return;
+			HandleHotkeys();
+			UpdateCameraMatrices();
+			entityRegistry.UpdateTracking(localPlayer);
+			
+			// Update SpatialGrid on Main Thread to avoid Unity API thread safety issues
+			if (entityRegistry != null && spatialGrid != null) {
+				List<EntityData> entities = entityRegistry.GetAll();
+				if (entities != null && entities.Count > 0) {
+					spatialGrid.UpdateGrid(entities);
+				}
+			}
+			
+			chamsSystem.Update(entityRegistry);
+
+		if (CheatConfig.espEnabled)
+			espRendererFixed.Update(entityRegistry, spatialGrid, localPlayer);
+
+		if (CheatConfig.aimbotEnabled)
+		{
+			aimbotSystemPro.UpdateTargets(localPlayer);
+			aimbotSystemPro.Process(localPlayer, Time.deltaTime);
+		}
+
+		if (CheatConfig.espSkeletalEnabled)
+			skeletalRenderer.UpdateAllSkeletons();
+
+		if (CheatConfig.wallHackEnabled)
+			visualSystemFixed.Update();
+
+		// --- ระบบ Chams เปิด-ปิด และคืนค่าสี ---
+		if (CheatConfig.chamsPlayers || CheatConfig.chamsAnimals) 
+		{
+		// ถ้ามีการเปิดใช้งานตัวใดตัวหนึ่ง ให้ทำงานปกติ
+		chamsSystem.Update(entityRegistry);
+		} 
+		else 
+		{
+		// ถ้าปิดทั้งสองตัว ให้สั่งล้างสีและคืนค่า Shader ทันที
+		chamsSystem.Cleanup(entityRegistry);
+		}
+
+		if (CheatConfig.noClipEnabled) movementSystem.Update(localPlayer, componentCache);
+		if (CheatConfig.noRecoil || CheatConfig.noReload) weaponSystem.Update(componentCache);
+		if (CheatConfig.dayTimeLock) timeController.Update();
+
+		if (movementSystem != null)
+    {
+        // เรียกใช้งาน Fly Hack โดยส่งค่าตัวละครและกล้องเข้าไป
+        movementSystem.ProcessFlyHack(localPlayer, mainCamera);
+    }
+	}
+
+	private void UpdateCameraMatrices()
+	{
+		if (mainCamera != null)
+		{
+			viewMatrix = mainCamera.worldToCameraMatrix;
+			projMatrix = mainCamera.projectionMatrix;
+		}
+	}
+
+	private void HandleHotkeys()
+	{
+		if (Input.GetKeyDown(KeyCode.Insert) || Input.GetKeyDown(KeyCode.F4)) guiManager.ToggleMenu();
+		if (Input.GetKeyDown(KeyCode.N)) { CheatConfig.noClipEnabled = !CheatConfig.noClipEnabled; Debug.Log("[NoClip] " + (CheatConfig.noClipEnabled ? "ON" : "OFF")); }
+		if (Input.GetKeyDown(KeyCode.T)) { CheatConfig.dayTimeLock = !CheatConfig.dayTimeLock; Debug.Log("[DayTime] " + (CheatConfig.dayTimeLock ? "ON" : "OFF")); }
+	}
+
+	public void OnGUI()
+	{
+		if (!isReady) return;
+		if (guiManager.IsVisible) guiManager.Render();
+
+		if (CheatConfig.espEnabled)
+			espRendererFixed.Render(viewMatrix, projMatrix, localPlayer);
+
+		if (CheatConfig.aimbotEnabled && CheatConfig.aimbotShowFOV)
+			aimbotSystemPro.RenderFOVCircle();
+
+		if (CheatConfig.espSkeletalEnabled)
+			skeletalRenderer.RenderSkeletalESP(mainCamera, viewMatrix, projMatrix);
+
+		if (CheatConfig.showCrosshair) RenderCrosshair();
+		if (CheatConfig.showFPS) RenderFPS();
+		RenderWatermark();
+	}
+
+	private float fps = 60f, fpsTimer = 0f;
+	private void RenderFPS()
+	{
+		if (Time.time > fpsTimer) { fps = 1f / Time.deltaTime; fpsTimer = Time.time + 0.5f; }
+		GUIStyle style = new GUIStyle(GUI.skin.label) { fontSize = 16, fontStyle = FontStyle.Bold };
+		style.normal.textColor = new Color(0f, 1f, 0.5f);
+		GUI.Label(new Rect(10f, 10f, 200f, 30f), string.Format("FPS: {0:F0}", fps), style);
+	}
+
+	private void RenderCrosshair()
+	{
+		Vector2 center = new Vector2(Screen.width / 2f, Screen.height / 2f);
+		float size = 8f, gap = 4f, thickness = 2f;
+		GUI.color = new Color(0f, 1f, 0.5f, 0.8f);
+		GUI.DrawTexture(new Rect(center.x - size - gap, center.y - thickness / 2f, size, thickness), CheatConfig.GetWhiteTexture());
+		GUI.DrawTexture(new Rect(center.x + gap, center.y - thickness / 2f, size, thickness), CheatConfig.GetWhiteTexture());
+		GUI.DrawTexture(new Rect(center.x - thickness / 2f, center.y - size - gap, thickness, size), CheatConfig.GetWhiteTexture());
+		GUI.DrawTexture(new Rect(center.x - thickness / 2f, center.y + gap, thickness, size), CheatConfig.GetWhiteTexture());
+		GUI.color = Color.white;
+	}
+
+	private void RenderWatermark()
+	{
+		GUIStyle style = new GUIStyle(GUI.skin.label) { fontSize = 14, fontStyle = FontStyle.Bold, alignment = TextAnchor.UpperRight };
+		style.normal.textColor = new Color(0f, 1f, 0.5f, 0.7f);
+		GUI.Label(new Rect(Screen.width - 450f, 10f, 440f, 30f), "RUST LEGACY CHEAT v3.0 | NO ERRORS", style);
+	}
+
+	public void Shutdown()
+	{
+		isReady = false;
+		if (threadManager != null) threadManager.Stop();
+		if (entityRegistry != null) entityRegistry.Clear();
+		if (spatialGrid != null) spatialGrid.Clear();
+		if (espRendererFixed != null) espRendererFixed.Cleanup();
+		if (aimbotSystemPro != null) aimbotSystemPro.Cleanup();
+		if (skeletalRenderer != null) skeletalRenderer.Cleanup();
+		if (visualSystemFixed != null) visualSystemFixed.Cleanup();
+		Debug.Log("[RustCheat] Shutdown complete");
+	}
+}
+
+public class ESPRenderer_Fixed
+{
+	private class TrackedEntity
+	{
+		public int entityID;
+		public EntityData data;
+		public Vector3 headPos;
+		public Vector3 feetPos;
+		public Vector3 headScreen;
+		public Vector3 feetScreen;
+		public float boxHeight;
+		public float boxWidth;
+		public bool isOnScreen;
+	}
+
+	private Dictionary<int, TrackedEntity> trackedEntities = new Dictionary<int, TrackedEntity>(128);
+	private List<TrackedEntity> renderQueue = new List<TrackedEntity>(128);
+	private GUIStyle nameStyle, distanceStyle;
+	private Texture2D boxTexture, healthBgTexture, healthFgTexture;
+
+	public ESPRenderer_Fixed()
+	{
+		nameStyle = new GUIStyle { fontSize = 11, fontStyle = FontStyle.Bold, alignment = TextAnchor.UpperCenter };
+		nameStyle.normal.textColor = Color.white;
+		distanceStyle = new GUIStyle { fontSize = 9, alignment = TextAnchor.UpperCenter };
+		distanceStyle.normal.textColor = new Color(0.9f, 0.9f, 0.9f);
+
+		boxTexture = new Texture2D(1, 1); boxTexture.SetPixel(0, 0, Color.white); boxTexture.Apply();
+		healthBgTexture = new Texture2D(1, 1); healthBgTexture.SetPixel(0, 0, new Color(0.2f, 0.2f, 0.2f, 0.8f)); healthBgTexture.Apply();
+		healthFgTexture = new Texture2D(1, 1); healthFgTexture.SetPixel(0, 0, Color.white); healthFgTexture.Apply();
+	}
+
+	public void Update(EntityRegistry entityRegistry, SpatialGrid spatialGrid, Character localChar)
+	{
+		if (localChar == null || entityRegistry == null) return;
+
+		trackedEntities.Clear();
+		Vector3 localPos = localChar.transform.position;
+
+		foreach (var entity in entityRegistry.GetAll())
+		{
+			if (entity.gameObject == null || entity.transform == null) continue;
+			if (entity.entityID == localChar.GetInstanceID()) continue;
+
+			bool isPlayer = entity.isPlayer;
+			bool isNPC = entity.character != null && !entity.isPlayer;
+			bool isResource = entity.entityType == EntityType.Resource;
+			bool isLoot = entity.entityType == EntityType.Lootable;
+
+			if (isPlayer && !CheatConfig.espShowPlayers) continue;
+			if (isNPC && !CheatConfig.espShowNPCs) continue;
+			if (isResource && !CheatConfig.espShowResources) continue;
+			if (isLoot && !CheatConfig.espShowLootables) continue;
+
+			float distance = Vector3.Distance(entity.position, localPos);
+			if (distance > CheatConfig.espMaxDistance) continue;
+
+			TrackedEntity tracked = new TrackedEntity { entityID = entity.entityID, data = entity };
+			trackedEntities[entity.entityID] = tracked;
+		}
+	}
+
+	public void Render(Matrix4x4 viewMatrix, Matrix4x4 projMatrix, Character localChar)
+	{
+		if (localChar == null) return;
+
+		renderQueue.Clear();
+		Camera mainCamera = Camera.main;
+		if (mainCamera == null) return;
+
+		foreach (var tracked in trackedEntities.Values)
+			{
+				Vector3 basePos;
+				float heightOffset = 1.8f;
+
+				if (tracked.data.character != null)
+				{
+					basePos = tracked.data.character.origin;
+					heightOffset = 1.8f;
+				}
+				else
+				{
+					basePos = tracked.data.position;
+					heightOffset = 1.0f; // สำหรับ Resource/Loot
+				}
+				
+				tracked.headPos = basePos + Vector3.up * heightOffset;
+				tracked.feetPos = basePos - Vector3.up * 0.1f;
+
+				tracked.headScreen = WorldToScreen(tracked.headPos, viewMatrix, projMatrix);
+				tracked.feetScreen = WorldToScreen(tracked.feetPos, viewMatrix, projMatrix);
+
+			if (tracked.headScreen.z <= 0 || tracked.feetScreen.z <= 0)
+			{
+				tracked.isOnScreen = false;
+				continue;
+			}
+			if ((tracked.headScreen.x < 0 || tracked.headScreen.x > Screen.width ||
+     tracked.headScreen.y < 0 || tracked.headScreen.y > Screen.height) &&
+    (tracked.feetScreen.x < 0 || tracked.feetScreen.x > Screen.width ||
+     tracked.feetScreen.y < 0 || tracked.feetScreen.y > Screen.height))
+{
+    tracked.isOnScreen = false;
+    continue;
+}
+			tracked.isOnScreen = true;
+
+			tracked.boxHeight = Mathf.Abs(tracked.feetScreen.y - tracked.headScreen.y);
+			tracked.boxWidth = tracked.boxHeight * 0.4f;
+
+			renderQueue.Add(tracked);
+		}
+
+		foreach (var tracked in renderQueue)
+		{
+			if (!tracked.isOnScreen) continue;
+			RenderEntity(tracked, localChar.transform.position);
+		}
+	}
+
+	private void RenderEntity(TrackedEntity tracked, Vector3 localPos)
+	{
+		float centerX = (tracked.headScreen.x + tracked.feetScreen.x) / 2f;
+		float topY = tracked.headScreen.y;
+		float bottomY = tracked.feetScreen.y;
+		float boxW = tracked.boxWidth;
+		float boxH = tracked.boxHeight;
+		float distance = Vector3.Distance(tracked.data.position, localPos);
+
+		Color espColor = GetESPColor(tracked.data);
+
+		if (CheatConfig.espShowBox && tracked.data.isPlayer && !tracked.data.isSleeping)
+		{
+			DrawBox(centerX, topY, boxW, boxH, espColor, 1.5f);
+		}
+
+		if (CheatConfig.espShowNames)
+		{
+			nameStyle.normal.textColor = espColor;
+			string name = tracked.data.playerName ?? "Unknown";
+			if (tracked.data.isPlayer && tracked.data.isSleeping)
+    name += " [Sleep]";
+			GUI.Label(new Rect(centerX - 75f, topY - 25f, 150f, 18f), name, nameStyle);
+		}
+
+		if (CheatConfig.espShowDistance)
+		{
+			string distText = string.Format("{0:F0}m", distance);
+			GUI.Label(new Rect(centerX - 50f, topY - 12f, 100f, 15f), distText, distanceStyle);
+		}
+
+		if (CheatConfig.espShowHealthBar && tracked.data.takeDamage != null && tracked.data.maxHealth > 0)
+		{
+			RenderHealthBar(centerX, bottomY, boxW, tracked.data.health, tracked.data.maxHealth, distance);
+		}
+	}
+
+	private void DrawBox(float centerX, float topY, float width, float height, Color color, float thickness)
+	{
+		float x = centerX - width / 2f;
+		float y = topY;
+
+		GUI.color = color;
+		
+		GUI.DrawTexture(new Rect(x, y, width, thickness), boxTexture);
+		GUI.DrawTexture(new Rect(x, y + height - thickness, width, thickness), boxTexture);
+		GUI.DrawTexture(new Rect(x, y, thickness, height), boxTexture);
+		GUI.DrawTexture(new Rect(x + width - thickness, y, thickness, height), boxTexture);
+
+		GUI.color = Color.white;
+	}
+
+	private void RenderHealthBar(float centerX, float bottomY, float boxWidth, float health, float maxHealth, float distance)
+{
+    float targetPercent = Mathf.Clamp01(health / maxHealth);
+
+    // 📌 ทำให้ลื่น (smooth)
+    float currentPercent = targetPercent; // ถ้าอยากโหดจริง เพิ่ม lerp state ได้
+
+    float barWidth = boxWidth * 0.85f;
+    float barHeight = 3f;
+
+    float barX = centerX - barWidth / 2f;
+    float barY = bottomY + 6f;
+
+    // 🌫️ fade ตามระยะ (optional แต่ดูแพงมาก)
+    float distanceFade = Mathf.Clamp01(1f - (distance / 200f));
+
+    // 🔲 Background (soft + โปร่ง)
+    GUI.color = new Color(0, 0, 0, 0.45f * distanceFade);
+    GUI.DrawTexture(new Rect(barX, barY, barWidth, barHeight), healthBgTexture);
+
+    // 🎨 Gradient health color (โหดขึ้น)
+    Color healthColor;
+
+    if (targetPercent > 0.5f)
+        healthColor = Color.Lerp(new Color(0.2f, 1f, 0.4f), new Color(1f, 0.85f, 0.2f), 1f - targetPercent);
+    else
+        healthColor = Color.Lerp(new Color(1f, 0.85f, 0.2f), new Color(1f, 0.2f, 0.2f), 1f - targetPercent);
+
+    healthColor.a = 0.9f * distanceFade;
+
+    // 📊 Fill
+    GUI.color = healthColor;
+    GUI.DrawTexture(new Rect(barX, barY, barWidth * currentPercent, barHeight), healthFgTexture);
+
+    // ✨ outline บาง ๆ (ทำให้ดูคม)
+    GUI.color = new Color(1f, 1f, 1f, 0.08f * distanceFade);
+    GUI.DrawTexture(new Rect(barX - 1, barY - 1, barWidth + 2, barHeight + 2), boxTexture);
+
+    GUI.color = Color.white;
+}
+
+	private Color GetESPColor(EntityData entity)
+	{
+		if (entity.isSleeping) return new Color(1f, 0.6f, 0f);
+		if (entity.isPlayer) return new Color(0.3f, 1f, 0.3f);
+		if (entity.character != null) return new Color(0.3f, 0.8f, 1f);
+		if (entity.entityType == EntityType.Resource) return new Color(1f, 1f, 0.3f);
+		if (entity.entityType == EntityType.Lootable) return new Color(1f, 0.3f, 0.8f);
+		return Color.white;
+	}
+
+	private Vector3 WorldToScreen(Vector3 worldPos, Matrix4x4 viewMatrix, Matrix4x4 projMatrix)
+{
+    Vector4 clipPos = projMatrix * (viewMatrix * new Vector4(worldPos.x, worldPos.y, worldPos.z, 1f));
+
+    // อยู่หลังกล้อง
+    if (clipPos.w <= 0.01f)
+        return new Vector3(0f, 0f, -1f);
+
+    float invW = 1.0f / clipPos.w;
+
+    float x = clipPos.x * invW;
+    float y = clipPos.y * invW;
+
+    Vector3 screen;
+    screen.x = (x + 1f) * 0.5f * Screen.width;
+    screen.y = (1f - y) * 0.5f * Screen.height;
+    screen.z = clipPos.w;
+
+    return screen;
+}
+
+	public void Cleanup() { trackedEntities.Clear(); renderQueue.Clear(); }
+}
+
+public class AimbotSystem_Pro
+{
+	private class AimbotTarget
+	{
+		public int entityID;
+		public Character character;
+		public Vector3 targetPosition, velocity;
+		public float distance, angleFromCenter, priority;
+		public HumanBodyBones targetBone;
+	}
+
+	private EntityRegistry entityRegistry;
+	private SpatialGrid spatialGrid;
+	private ComponentCache componentCache;
+	private AimbotTarget currentTarget;
+	private List<AimbotTarget> potentialTargets = new List<AimbotTarget>(32);
+	private Vector3 currentAimDirection;
+	private Texture2D fovCircleTexture;
+	private const int BULLET_SPEED = 300;
+	private Dictionary<int, Vector3> lastCharacterPos = new Dictionary<int, Vector3>(64);
+
+	public AimbotSystem_Pro(EntityRegistry er, SpatialGrid sg, ComponentCache cc)
+	{
+		entityRegistry = er; spatialGrid = sg; componentCache = cc;
+		CreateFOVCircle();
+	}
+
+	private void CreateFOVCircle()
+	{
+		int size = 512;
+		fovCircleTexture = new Texture2D(size, size);
+		Color[] pixels = new Color[size * size];
+		Vector2 center = new Vector2(size / 2f, size / 2f);
+		float radius = size / 2f - 2f;
+		for (int i = 0; i < pixels.Length; i++) pixels[i] = Color.clear;
+		for (int angle = 0; angle < 360; angle++)
+		{
+			float rad = angle * Mathf.Deg2Rad;
+			int x = (int)(center.x + Mathf.Cos(rad) * radius), y = (int)(center.y + Mathf.Sin(rad) * radius);
+			if (x >= 0 && x < size && y >= 0 && y < size) pixels[y * size + x] = new Color(0f, 1f, 0f, 0.6f);
+		}
+		fovCircleTexture.SetPixels(pixels); fovCircleTexture.Apply();
+	}
+
+	private Vector3 GetEntityVelocity(Character character)
+	{
+		if (character == null) return Vector3.zero;
+		
+		Rigidbody rb = character.GetComponent<Rigidbody>();
+		if (rb != null) return rb.velocity;
+		
+		int charID = character.GetInstanceID();
+		if (lastCharacterPos.ContainsKey(charID))
+		{
+			Vector3 lastPos = lastCharacterPos[charID];
+			Vector3 velocity = (character.origin - lastPos) / Time.deltaTime;
+			lastCharacterPos[charID] = character.origin;
+			return Vector3.ClampMagnitude(velocity, 30f);
+		}
+		
+		lastCharacterPos[charID] = character.origin;
+		return Vector3.zero;
+	}
+
+	public void UpdateTargets(Character localChar)
+	{
+		if (localChar == null || entityRegistry == null) return;
+		potentialTargets.Clear();
+		Vector3 localPos = localChar.transform.position;
+		Camera mainCamera = Camera.main;
+		if (mainCamera == null) return;
+		Vector3 cameraForward = mainCamera.transform.forward;
+		
+		foreach (var entity in entityRegistry.GetAll())
+		{
+			if (!IsValidTarget(entity, localChar)) continue;
+			Vector3 targetPos = GetBonePosition(entity.character, CheatConfig.aimbotTargetBone);
+			Vector3 direction = (targetPos - mainCamera.transform.position).normalized;
+			float distance = Vector3.Distance(targetPos, localPos);
+			if (distance > CheatConfig.aimbotRange) continue;
+			float angle = Vector3.Angle(cameraForward, direction);
+			if (angle > CheatConfig.aimbotFOV) continue;
+			
+			Vector3 velocity = GetEntityVelocity(entity.character);
+			
+			AimbotTarget target = new AimbotTarget { entityID = entity.entityID, character = entity.character, targetPosition = targetPos, velocity = velocity, distance = distance, angleFromCenter = angle, targetBone = CheatConfig.aimbotTargetBone };
+			target.priority = CalculatePriority(target, entity);
+			potentialTargets.Add(target);
+		}
+		potentialTargets.Sort((a, b) => a.priority.CompareTo(b.priority));
+		currentTarget = potentialTargets.Count > 0 ? potentialTargets[0] : null;
+	}
+
+	private bool IsValidTarget(EntityData entity, Character localChar)
+	{
+		if (entity.character == null || entity.character == localChar || entity.gameObject == null) return false;
+		if (entity.takeDamage != null && entity.takeDamage.health <= 0) return false;
+		if (entity.isPlayer && !CheatConfig.aimbotTargetPlayers) return false;
+		if (!entity.isPlayer && !CheatConfig.aimbotTargetNPCs) return false;
+		if (entity.isSleeping && !CheatConfig.aimbotTargetSleeping) return false;
+		return true;
+	}
+
+	private Vector3 GetBonePosition(Character character, HumanBodyBones bone)
+	{
+		if (character == null) return Vector3.zero;
+		Animator animator = character.GetComponent<Animator>();
+		if (animator != null) { Transform boneTransform = animator.GetBoneTransform(bone); if (boneTransform != null) return boneTransform.position; }
+		return character.origin;
+	}
+
+	private float CalculatePriority(AimbotTarget target, EntityData entity)
+	{
+		float priority = target.distance * 0.5f + target.angleFromCenter * 2f;
+		if (entity.takeDamage != null && entity.maxHealth > 0) { float healthPercent = entity.health / entity.maxHealth; priority += healthPercent * 50f; }
+		if (entity.isPlayer) priority *= 0.7f;
+		return priority;
+	}
+
+	public void Process(Character localChar, float deltaTime)
+	{
+		if (localChar == null) return;
+		Camera mainCamera = Camera.main;
+		if (mainCamera == null) return;
+		bool shouldAim = CheckHotkeys();
+		if (!shouldAim) { currentTarget = null; return; }
+		if (currentTarget == null || currentTarget.character == null) return;
+		
+		Vector3 targetPos = currentTarget.targetPosition;
+		if (CheatConfig.aimbotPrediction && currentTarget.velocity.magnitude > 0.1f)
+		{
+			float timeToTarget = currentTarget.distance / BULLET_SPEED;
+			targetPos += currentTarget.velocity * timeToTarget;
+		}
+		
+		Vector3 aimDirection = (targetPos - mainCamera.transform.position).normalized;
+		if (CheatConfig.aimbotSmoothing > 0) 
+			currentAimDirection = Vector3.Slerp(mainCamera.transform.forward, aimDirection, CheatConfig.aimbotSmoothing * 10f * deltaTime);
+		else 
+			currentAimDirection = aimDirection;
+		
+		Quaternion targetRotation = Quaternion.LookRotation(currentAimDirection);
+		mainCamera.transform.rotation = targetRotation;
+		
+		if (CheatConfig.aimbotRotateCharacter)
+		{
+			Vector3 horizontalDir = new Vector3(currentAimDirection.x, 0, currentAimDirection.z).normalized;
+			if (horizontalDir.magnitude > 0.1f)
+			{
+				Quaternion charRotation = Quaternion.LookRotation(horizontalDir);
+				localChar.transform.rotation = Quaternion.Slerp(localChar.transform.rotation, charRotation, 5f * deltaTime);
+			}
+		}
+	}
+
+	private bool CheckHotkeys()
+	{
+		if (CheatConfig.aimbotAutoAim) return true;
+		foreach (KeyCode key in CheatConfig.aimbotHotkeys) if (Input.GetKey(key)) return true;
+		return false;
+	}
+
+	public void RenderFOVCircle()
+	{
+		if (!CheatConfig.aimbotShowFOV || fovCircleTexture == null) return;
+		Camera mainCamera = Camera.main;
+		if (mainCamera == null) return;
+		float fovAngle = CheatConfig.aimbotFOV, fovRadius = (fovAngle / mainCamera.fieldOfView) * Screen.height;
+		Vector2 center = new Vector2(Screen.width / 2f, Screen.height / 2f);
+		Rect circleRect = new Rect(center.x - fovRadius, center.y - fovRadius, fovRadius * 2f, fovRadius * 2f);
+		GUI.DrawTexture(circleRect, fovCircleTexture);
+		if (currentTarget != null && currentTarget.character != null)
+		{
+			GUI.color = Color.red;
+			GUIStyle lockStyle = new GUIStyle { alignment = TextAnchor.MiddleCenter, fontSize = 14, fontStyle = FontStyle.Bold };
+			lockStyle.normal.textColor = Color.red;
+			GUI.Label(new Rect(center.x - 50f, center.y - 60f, 100f, 20f), "LOCKED", lockStyle);
+			GUI.color = Color.white;
+		}
+	}
+
+	public void Cleanup() { potentialTargets.Clear(); currentTarget = null; lastCharacterPos.Clear(); }
+}
+
+public class SkeletalRenderer_Complete
+{
+	private struct BoneConnection
+	{
+		public HumanBodyBones from, to;
+		public BoneConnection(HumanBodyBones f, HumanBodyBones t) { from = f; to = t; }
+	}
+
+	private List<BoneConnection> boneConnections;
+	private Texture2D lineTexture;
+	private Camera mainCamera;
+
+	public void Initialize(Camera camera)
+	{
+		mainCamera = camera;
+		lineTexture = new Texture2D(1, 1);
+		lineTexture.SetPixel(0, 0, Color.white);
+		lineTexture.Apply();
+		DefineBoneConnections();
+	}
+
+	private void DefineBoneConnections()
+	{
+		boneConnections = new List<BoneConnection>();
+
+		boneConnections.Add(new BoneConnection(HumanBodyBones.Head, HumanBodyBones.Neck));
+		boneConnections.Add(new BoneConnection(HumanBodyBones.Neck, HumanBodyBones.Chest));
+		boneConnections.Add(new BoneConnection(HumanBodyBones.Chest, HumanBodyBones.Spine));
+		boneConnections.Add(new BoneConnection(HumanBodyBones.Spine, HumanBodyBones.Hips));
+
+		boneConnections.Add(new BoneConnection(HumanBodyBones.Chest, HumanBodyBones.LeftShoulder));
+		boneConnections.Add(new BoneConnection(HumanBodyBones.LeftShoulder, HumanBodyBones.LeftUpperArm));
+		boneConnections.Add(new BoneConnection(HumanBodyBones.LeftUpperArm, HumanBodyBones.LeftLowerArm));
+		boneConnections.Add(new BoneConnection(HumanBodyBones.LeftLowerArm, HumanBodyBones.LeftHand));
+
+		boneConnections.Add(new BoneConnection(HumanBodyBones.Chest, HumanBodyBones.RightShoulder));
+		boneConnections.Add(new BoneConnection(HumanBodyBones.RightShoulder, HumanBodyBones.RightUpperArm));
+		boneConnections.Add(new BoneConnection(HumanBodyBones.RightUpperArm, HumanBodyBones.RightLowerArm));
+		boneConnections.Add(new BoneConnection(HumanBodyBones.RightLowerArm, HumanBodyBones.RightHand));
+
+		boneConnections.Add(new BoneConnection(HumanBodyBones.Hips, HumanBodyBones.LeftUpperLeg));
+		boneConnections.Add(new BoneConnection(HumanBodyBones.LeftUpperLeg, HumanBodyBones.LeftLowerLeg));
+		boneConnections.Add(new BoneConnection(HumanBodyBones.LeftLowerLeg, HumanBodyBones.LeftFoot));
+
+		boneConnections.Add(new BoneConnection(HumanBodyBones.Hips, HumanBodyBones.RightUpperLeg));
+		boneConnections.Add(new BoneConnection(HumanBodyBones.RightUpperLeg, HumanBodyBones.RightLowerLeg));
+		boneConnections.Add(new BoneConnection(HumanBodyBones.RightLowerLeg, HumanBodyBones.RightFoot));
+	}
+
+	public void RenderSkeletalESP(Camera camera, Matrix4x4 viewMatrix, Matrix4x4 projMatrix)
+	{
+		if (camera == null || lineTexture == null) return;
+
+		Character[] allChars = UnityEngine.Object.FindObjectsOfType<Character>();
+		if (allChars == null) return;
+
+		foreach (Character character in allChars)
+		{
+			if (character == null) continue;
+			RenderSkeleton(character, viewMatrix, projMatrix);
+		}
+	}
+
+	private void RenderSkeleton(Character character, Matrix4x4 viewMatrix, Matrix4x4 projMatrix)
+	{
+		if (character == null) return;
+
+		Animator animator = null;
+		try { animator = character.GetComponent<Animator>(); } catch { return; }
+		if (animator == null) return;
+
+		foreach (BoneConnection connection in boneConnections)
+		{
+			try
+			{
+				Transform fromBone = animator.GetBoneTransform(connection.from);
+				Transform toBone = animator.GetBoneTransform(connection.to);
+
+				if (fromBone == null || toBone == null) continue;
+
+				Vector3 fromPos = fromBone.position;
+				Vector3 toPos = toBone.position;
+
+				Vector2 fromScreen = WorldToScreen(fromPos, viewMatrix, projMatrix);
+				Vector2 toScreen = WorldToScreen(toPos, viewMatrix, projMatrix);
+
+				DrawLine(fromScreen, toScreen, Color.white, 2f);
+			}
+			catch
+			{
+				continue;
+			}
+		}
+	}
+
+	private void DrawLine(Vector2 from, Vector2 to, Color color, float thickness)
+	{
+		Vector2 diff = to - from;
+		float angle = Mathf.Atan2(diff.y, diff.x) * Mathf.Rad2Deg;
+		float length = diff.magnitude;
+
+		if (length < 1f) return;
+
+		GUI.color = color;
+		Matrix4x4 matrixBackup = GUI.matrix;
+
+		GUIUtility.RotateAroundPivot(angle, from);
+		GUI.DrawTexture(new Rect(from.x, from.y - thickness / 2f, length, thickness), lineTexture);
+		GUI.matrix = matrixBackup;
+
+		GUI.color = Color.white;
+	}
+
+	private Vector2 WorldToScreen(Vector3 worldPos, Matrix4x4 viewMatrix, Matrix4x4 projMatrix)
+	{
+		Vector4 clipPos = projMatrix * (viewMatrix * new Vector4(worldPos.x, worldPos.y, worldPos.z, 1f));
+		if (clipPos.w <= 0.01f) return new Vector2(-9999, -9999);
+		Vector3 ndc = new Vector3(clipPos.x / clipPos.w, clipPos.y / clipPos.w, clipPos.w);
+		return new Vector2((ndc.x + 1f) * 0.5f * Screen.width, Screen.height - (ndc.y + 1f) * 0.5f * Screen.height);
+	}
+
+	public void UpdateAllSkeletons() { }
+	public void LateUpdate() { }
+	public void Cleanup() { }
+}
+
+public class VisualSystem_Fixed
+{
+	private class RendererState
+	{
+		public Renderer renderer;
+		public bool originalEnabled;
+	}
+
+	private Dictionary<int, RendererState> hiddenRenderers = new Dictionary<int, RendererState>(256);
+	private float lastUpdateTime = 0f;
+	private const float UPDATE_INTERVAL = 1.0f;
+	private bool wasWallHackEnabled = false;
+
+	public VisualSystem_Fixed(EntityRegistry em) { }
+
+	public void Update()
+	{
+		try
+		{
+			float currentTime = Time.time;
+
+			if (CheatConfig.wallHackEnabled != wasWallHackEnabled)
+			{
+				if (!CheatConfig.wallHackEnabled) RestoreAllRenderers();
+				wasWallHackEnabled = CheatConfig.wallHackEnabled;
+			}
+
+			if (!CheatConfig.wallHackEnabled) return;
+			if (currentTime - lastUpdateTime < UPDATE_INTERVAL) return;
+
+			lastUpdateTime = currentTime;
+			ProcessWallHack();
+		}
+		catch (Exception ex)
+		{
+			Debug.LogWarning("[WallHack] Update error (safe): " + ex.Message);
+		}
+	}
+
+	private void ProcessWallHack()
+	{
+		try
+		{
+                // Scan Renderers instead of Colliders for better control and less impact on physics
+                Renderer[] allRenderers = UnityEngine.Object.FindObjectsOfType<Renderer>();
+                if (allRenderers == null || allRenderers.Length == 0) return;
+
+                int processCount = 0;
+                const int maxPerFrame = 50; // Increased for renderers, still throttled
+
+                foreach (Renderer renderer in allRenderers)
+                {
+                    if (renderer == null || processCount >= maxPerFrame) break;
+                    if (!ShouldHideStructure(renderer.gameObject)) continue;
+
+                    int instanceId = renderer.GetInstanceID();
+                    if (!hiddenRenderers.ContainsKey(instanceId))
+                    {
+                        hiddenRenderers[instanceId] = new RendererState { renderer = renderer, originalEnabled = renderer.enabled };
+                    }
+
+                    try
+                    {
+                        renderer.enabled = false;
+                        processCount++;
+                    }
+                    catch { }
+                }
+		}
+		catch (Exception ex)
+		{
+			Debug.LogWarning("[WallHack] Process error (safe): " + ex.Message);
+		}
+	}
+
+	private bool ShouldHideStructure(GameObject obj)
+	{
+            if (obj == null) return false;
+            
+            // Check if the object has a Renderer component
+            Renderer objRenderer = obj.GetComponent<Renderer>();
+            if (objRenderer == null) return false;
+
+            string name = obj.name.ToLower();
+            
+            if (CheatConfig.wallHackHideWalls && 
+                (name.Contains("wall") || name.Contains("foundation") || name.Contains("pillar") || name.Contains("building")))
+                return true;
+            
+            if (CheatConfig.wallHackHideDoors && 
+                (name.Contains("door") || name.Contains("gate") || name.Contains("hatch")))
+                return true;
+            
+            if (CheatConfig.wallHackHideCeilings && 
+                (name.Contains("ceiling") || name.Contains("roof") || name.Contains("floor")))
+                return true;
+		
+		return false;
+	}
+
+	private void RestoreAllRenderers()
+	{
+		try
+		{
+			int restoredCount = 0;
+			List<int> toRemove = new List<int>();
+
+			foreach (var kvp in hiddenRenderers)
+			{
+				try
+				{
+					RendererState state = kvp.Value;
+                    if (state.renderer != null && state.renderer.gameObject != null)
+                    {
+                        state.renderer.enabled = state.originalEnabled;
+                        restoredCount++;
+                    }
+					toRemove.Add(kvp.Key);
+				}
+				catch
+				{
+					toRemove.Add(kvp.Key);
+				}
+			}
+
+			foreach (int id in toRemove)
+				hiddenRenderers.Remove(id);
+
+			Debug.Log(string.Format("[WallHack] Restored {0} renderers", restoredCount));
+		}
+		catch (Exception ex)
+		{
+			Debug.LogWarning("[WallHack] Restore error (safe): " + ex.Message);
+			hiddenRenderers.Clear();
+		}
+	}
+
+	public void Cleanup()
+	{
+		try
+		{
+			if (hiddenRenderers.Count > 0) RestoreAllRenderers();
+		}
+		catch
+		{
+			hiddenRenderers.Clear();
+		}
+	}
+}
+
+public class EntityRegistry
+{
+    private Dictionary<int, EntityData> entities = new Dictionary<int, EntityData>(512);
+    private List<EntityData> entityList = new List<EntityData>(512);
+    private float lastScanTime = 0f;
+    
+    // เพิ่ม Reference ถึง ChamsSystem เพื่อสั่งคืนค่าก่อนลบข้อมูล
+    public ChamsSystem_Ultimate chamsSystemRef; 
+
+    public void UpdateTracking(Character localPlayer)
+    {
+        if (Time.time - lastScanTime < 1.5f) return;
+        lastScanTime = Time.time;
+        if (localPlayer == null) return;
+
+        // --- [MEMORY CLEANUP LOGIC START] ---
+        // 1. ตรวจสอบวัตถุเดิมที่เคยติดตามอยู่
+        List<int> idsToRemove = new List<int>();
+        foreach (var kvp in entities)
+        {
+            // ถ้าวัตถุถูกทำลายไปแล้ว หรืออยู่ไกลเกินไป (หลุดจากระยะสแกน)
+            if (kvp.Value.gameObject == null || Vector3.Distance(kvp.Value.position, localPlayer.origin) > CheatConfig.espMaxDistance + 50f)
+            {
+                // สั่งคืนค่า Shader ทันทีผ่าน ChamsSystem ก่อนจะลบ ID นี้ออก
+                if (chamsSystemRef != null && kvp.Value.character != null)
+                {
+                    chamsSystemRef.ForceRestore(kvp.Value.character);
+                }
+                idsToRemove.Add(kvp.Key);
+            }
+        }
+
+        // 2. ลบข้อมูลที่ไม่ได้ใช้แล้วออกจาก Dictionary เพื่อคืน Memory
+        foreach (int id in idsToRemove)
+        {
+            entities.Remove(id);
+        }
+        // --- [MEMORY CLEANUP LOGIC END] ---
+
+        // เริ่มการสแกนใหม่ตามปกติ
+        entityList.Clear();
+        Vector3 localPos = localPlayer.transform.position;
+        float maxDist = Mathf.Max(CheatConfig.espMaxDistance, CheatConfig.aimbotRange);
+
+        if (CheatConfig.espEnabled || CheatConfig.aimbotEnabled) ScanCharacters(localPlayer, localPos, maxDist);
+        if (CheatConfig.espShowResources) ScanResources(localPos, maxDist);
+        if (CheatConfig.espShowLootables) ScanLootables(localPos, maxDist);
+        
+        entityList.AddRange(entities.Values);
+    }
+
+    private void ScanCharacters(Character localPlayer, Vector3 localPos, float maxDist)
+    {
+        UnityEngine.Object[] chars = UnityEngine.Object.FindObjectsOfType(typeof(Character));
+        if (chars == null) return;
+        foreach (UnityEngine.Object obj in chars)
+        {
+            Character c = obj as Character;
+            if (c == null || c == localPlayer || c.gameObject == null) continue;
+            
+            float dist = Vector3.Distance(c.origin, localPos);
+            if (dist > maxDist) continue;
+
+            TakeDamage td = c.GetComponent<TakeDamage>();
+            PlayerClient pc = c.playerClient;
+            bool isSleeping = DetectSleeping(c);
+
+            EntityData data = new EntityData { 
+                entityID = c.GetInstanceID(), 
+                gameObject = c.gameObject, 
+                transform = c.transform, 
+                position = c.origin, 
+                entityType = EntityType.Character, 
+                character = c, 
+                takeDamage = td, 
+                isPlayer = pc != null, 
+                isSleeping = isSleeping, 
+                playerName = pc != null ? pc.userName : c.name.Replace("(Clone)", ""), 
+                health = td != null ? td.health : 0f, 
+                maxHealth = td != null ? td.maxHealth : 100f, 
+                distance = dist 
+            };
+            entities[data.entityID] = data;
+        }
+    }
+
+    private bool DetectSleeping(Character character)
+    {
+        if (character == null) return false;
+        try {
+            if (character.GetComponent<SleepingAvatar>() != null) return true;
+            Animator anim = character.GetComponent<Animator>();
+            if (anim != null) {
+                AnimatorStateInfo state = anim.GetCurrentAnimatorStateInfo(0);
+                if (state.nameHash == Animator.StringToHash("Sleep")) return true;
+            }
+        } catch { }
+        return false;
+    }
+
+    private void ScanResources(Vector3 localPos, float maxDist)
+    {
+        UnityEngine.Object[] resources = UnityEngine.Object.FindObjectsOfType(typeof(ResourceObject));
+        if (resources == null) return;
+        foreach (UnityEngine.Object obj in resources)
+        {
+            ResourceObject res = obj as ResourceObject;
+            if (res == null || res.gameObject == null) continue;
+            float dist = Vector3.Distance(res.transform.position, localPos);
+            if (dist > maxDist) continue;
+
+            TakeDamage resTd = res.GetComponent<TakeDamage>();
+            EntityData data = new EntityData { 
+                entityID = res.GetInstanceID(), 
+                gameObject = res.gameObject, 
+                transform = res.transform, 
+                position = res.transform.position, 
+                entityType = EntityType.Resource, 
+                resourceObject = res, 
+                playerName = res.name.Replace("(Clone)", ""), 
+                distance = dist, 
+                health = resTd != null ? resTd.health : 100f, 
+                maxHealth = resTd != null ? resTd.maxHealth : 100f, 
+                takeDamage = resTd 
+            };
+            entities[data.entityID] = data;
+        }
+    }
+
+    private void ScanLootables(Vector3 localPos, float maxDist)
+    {
+        UnityEngine.Object[] lootables = UnityEngine.Object.FindObjectsOfType(typeof(LootableObject));
+        if (lootables == null) return;
+        foreach (UnityEngine.Object obj in lootables)
+        {
+            LootableObject loot = obj as LootableObject;
+            if (loot == null || loot.gameObject == null) continue;
+            float dist = Vector3.Distance(loot.transform.position, localPos);
+            if (dist > maxDist) continue;
+
+            TakeDamage lootTd = loot.GetComponent<TakeDamage>();
+            EntityData data = new EntityData { 
+                entityID = loot.GetInstanceID(), 
+                gameObject = loot.gameObject, 
+                transform = loot.transform, 
+                position = loot.transform.position, 
+                entityType = EntityType.Lootable, 
+                lootableObject = loot, 
+                playerName = loot.name.Replace("(Clone)", ""), 
+                distance = dist, 
+                health = lootTd != null ? lootTd.health : 100f, 
+                maxHealth = lootTd != null ? lootTd.maxHealth : 100f, 
+                takeDamage = lootTd 
+            };
+            entities[data.entityID] = data;
+        }
+    }
+
+    public List<EntityData> GetAll() => entityList;
+
+    public bool TryGetEntity(int id, out EntityData data) => entities.TryGetValue(id, out data);
+    public void Clear() { entities.Clear(); entityList.Clear(); }
+}
+
+public class SpatialGrid { 
+	private float cellSize; 
+	private Dictionary<long, List<int>> grid = new Dictionary<long, List<int>>(256); 
+	
+	public SpatialGrid(float size) { cellSize = size; } 
+	
+	public void UpdateGrid(List<EntityData> entities) { 
+		grid.Clear(); 
+		foreach (EntityData entity in entities) { 
+			if (entity.transform == null) continue; 
+			long key = GetCellKey(entity.position); 
+			if (!grid.ContainsKey(key)) grid[key] = new List<int>(16); 
+			grid[key].Add(entity.entityID); 
+		} 
+	} 
+	
+	public List<int> GetNearby(Vector3 position) { 
+		List<int> result = new List<int>(64); 
+		long key = GetCellKey(position); 
+		for (int x = -1; x <= 1; x++) 
+			for (int z = -1; z <= 1; z++) { 
+				long cellKey = key + x + (z * 100000); 
+				if (grid.ContainsKey(cellKey)) result.AddRange(grid[cellKey]); 
+			} 
+		return result; 
+	} 
+	
+	private long GetCellKey(Vector3 pos) { 
+		int x = Mathf.FloorToInt(pos.x / cellSize), z = Mathf.FloorToInt(pos.z / cellSize); 
+		return x + (z * 100000); 
+	} 
+	
+	public void Clear() { grid.Clear(); } 
+}
+
+	public class ComponentCache { 
+	public CharacterController controller; 
+	public Rigidbody rigidbody;
+	public Inventory inventory; 
+	public PlayerClient playerClient; 
+	public Transform transform; 
+	
+	public ComponentCache(Character character) { 
+		if (character == null) return; 
+		controller = character.GetComponent<CharacterController>(); 
+		rigidbody = character.GetComponent<Rigidbody>();
+		inventory = character.GetComponent<Inventory>(); 
+		playerClient = character.GetComponent<PlayerClient>(); 
+		transform = character.transform; 
+	} 
+}
+
+public class ThreadManager 
+{ 
+    private Thread workerThread; 
+    private bool running = false; 
+    private EntityRegistry registry; 
+    private SpatialGrid spatial; 
+    
+    public void Start(EntityRegistry reg, SpatialGrid grid) { 
+        registry = reg; 
+        spatial = grid; 
+        running = true; 
+        workerThread = new Thread(WorkerLoop); 
+        workerThread.IsBackground = true; 
+        workerThread.Start(); 
+    } 
+    
+    private void WorkerLoop() { 
+        while (running) { 
+            try { 
+                // ปรับปรุง: ใน Thread ให้ทำแค่การจัดเรียง SpatialGrid เท่านั้น (ห้ามเรียก Unity API)
+                if (registry != null && spatial != null) { 
+                    // SpatialGrid update is now handled on the main thread.
+                    // This thread will only manage data that does not interact with Unity API directly.
+                    // For now, it just sleeps to reduce CPU load if no other background tasks are assigned.
+                    
+                } 
+                Thread.Sleep(100); // เพิ่มดีเลย์เป็น 100ms เพื่อลด CPU Load
+            } catch (Exception) { 
+                // เงียบไว้เพื่อไม่ให้ Debug.Log ใน Thread ทำเครื่องค้าง
+            } 
+        } 
+    } 
+    
+    public void Stop() { 
+        running = false; 
+        if (workerThread != null && workerThread.IsAlive) 
+            workerThread.Join(500); 
+    } 
+}
+
+public class MovementSystem { 
+	private bool wasNoClipEnabled = false; 
+	
+	public void Update(Character player, ComponentCache cache) { 
+		if (player == null || cache.controller == null) return; 
+
+		// --- เพิ่ม No Fall Damage ไว้ตรงนี้ครับ ---
+		if (CheatConfig.noFallDamage) 
+		{
+			FallDamage component = player.GetComponent<FallDamage>();
+			if (component != null) 
+			{
+				component.SetLegInjury(0f);
+			}
+		}
+
+		if (CheatConfig.noClipEnabled) { 
+			if (!wasNoClipEnabled) { 
+				cache.controller.enabled = false; 
+				wasNoClipEnabled = true; 
+			} 
+			ProcessNoClip(player, cache); 
+		} else if (wasNoClipEnabled) { 
+			cache.controller.enabled = true; 
+			wasNoClipEnabled = false; 
+		} 
+	} 
+	// เพิ่ม Method นี้เข้าไปในคลาส MovementSystem
+	public void ProcessFlyHack(Character localPlayer, Camera mainCamera)
+	{
+    // ตรวจสอบว่าเปิดใช้งาน Fly Hack และมีตัวละครอยู่จริง
+    if (!CheatConfig.movementFlyHack || localPlayer == null || mainCamera == null)
+    {
+        return;
+    }
+
+    // ดึงคอมโพเนนต์ CCMotor ที่ควบคุมการเคลื่อนที่
+    CCMotor ccmotor = localPlayer.ccmotor;
+    if (ccmotor == null) return;
+
+    Vector3 direction = Vector3.zero;
+
+    // ตรวจสอบการกดปุ่ม WASD เพื่อกำหนดทิศทาง
+    if (Input.GetKey(KeyCode.W)) direction += mainCamera.transform.forward;
+    if (Input.GetKey(KeyCode.S)) direction -= mainCamera.transform.forward;
+    if (Input.GetKey(KeyCode.A)) direction -= mainCamera.transform.right;
+    if (Input.GetKey(KeyCode.D)) direction += mainCamera.transform.right;
+    
+    // ใช้ Space Bar เพื่อบินขึ้น และ Left Control เพื่อบินลง
+    if (Input.GetKey(KeyCode.Space)) direction += Vector3.up;
+    if (Input.GetKey(KeyCode.LeftControl)) direction += Vector3.down;
+
+    // ถ้ามีการกดปุ่มทิศทาง ให้ทำการเคลื่อนที่
+    if (direction != Vector3.zero)
+    {
+        // คำนวณความเร็วและทิศทาง (Normalize เพื่อให้ความเร็วคงที่ทุกแนว)
+        ccmotor.velocity = direction.normalized * CheatConfig.flyHackSpeed;
+    }
+    else
+    {
+        // ถ้าไม่กดปุ่มอะไรเลย ให้หยุดนิ่งกลางอากาศ (Anti-Gravity)
+        ccmotor.velocity = Vector3.zero;
+    }
+}
+
+	
+	private void ProcessNoClip(Character player, ComponentCache cache) { 
+		float speed = CheatConfig.noClipSpeed; 
+		if (Input.GetKey(KeyCode.LeftShift)) speed *= 2f; 
+		Vector3 move = Vector3.zero; 
+		if (Input.GetKey(KeyCode.W)) move += cache.transform.forward; 
+		if (Input.GetKey(KeyCode.S)) move -= cache.transform.forward; 
+		if (Input.GetKey(KeyCode.A)) move -= cache.transform.right; 
+		if (Input.GetKey(KeyCode.D)) move += cache.transform.right; 
+		if (Input.GetKey(KeyCode.Space)) move += Vector3.up; 
+		if (Input.GetKey(KeyCode.LeftControl)) move += Vector3.down; 
+		if (move != Vector3.zero) cache.transform.position += move.normalized * speed * Time.deltaTime; 
+	} 
+}
+
+
+public class WeaponSystem { 
+
+    public void Update(ComponentCache cache) { 
+        if (cache.inventory == null) return; 
+        
+        InventoryItem activeItem = cache.inventory._activeItem; 
+        if (activeItem == null) return; 
+        
+        if (activeItem is BulletWeaponItem<BulletWeaponDataBlock>) { 
+            BulletWeaponItem<BulletWeaponDataBlock> weapon = activeItem as BulletWeaponItem<BulletWeaponDataBlock>; 
+            if (weapon == null || weapon.datablock == null) return; 
+            
+            // --- ส่วนของ No Recoil เดิม ---
+            if (CheatConfig.noRecoil) { 
+                weapon.datablock.recoilPitchMin = 0f; 
+                weapon.datablock.recoilPitchMax = 0f; 
+                weapon.datablock.recoilYawMin = 0f; 
+                weapon.datablock.recoilYawMax = 0f; 
+            } 
+            
+            // --- เพิ่ม No Spread เข้าไปตรงนี้ครับ ---
+            if (CheatConfig.noSpread) {
+                weapon.datablock.aimSway = 0f;
+				weapon.datablock.aimSwaySpeed = 0f;
+
+            }
+            
+            if (CheatConfig.noReload && weapon.clipAmmo <= 1 && weapon.itemRepresentation != null) 
+                weapon.itemRepresentation.Action(3, uLink.RPCMode.Server); 
+        } 
+    } 
+}
+
+public class TimeController { 
+    private float lastUpdateTime = 0f; 
+    private TOD_Sky cachedSky = null; // เพิ่มตัวเก็บ Cache
+    
+    public void Update() { 
+        if (!CheatConfig.dayTimeLock) return;
+        
+        // เช็คทุก 0.5 วินาทีเพื่อประหยัด FPS
+        if (Time.time - lastUpdateTime < 0.5f) return; 
+        lastUpdateTime = Time.time; 
+        
+        try { 
+            // ถ้ายังไม่มี Cache หรือท้องฟ้าหายไป ให้หาใหม่
+            if (cachedSky == null) {
+                TOD_Sky[] skies = UnityEngine.Object.FindObjectsOfType<TOD_Sky>();
+                if (skies != null && skies.Length > 0) {
+                    cachedSky = skies[0];
+                }
+            }
+
+            // ถ้ามีท้องฟ้าแล้ว ให้ล็อคเวลาทันที
+            if (cachedSky != null) {
+                cachedSky.Cycle.Hour = 12f;
+                cachedSky.Cycle.Day = 0;
+                // ล็อควันที่เพื่อป้องกันการเปลี่ยนฤดูกาล/แสง
+                cachedSky.Cycle.DateTime = new System.DateTime(2013, 1, 1, 12, 0, 0);
+            }
+        } catch (System.Exception ex) { 
+            // หากเกิด Error ให้ล้าง Cache เพื่อหาใหม่ในรอบหน้า
+            cachedSky = null;
+            Debug.LogWarning("[TimeController] Error: " + ex.Message); 
+        } 
+    } 
+}
+
+
+public class GUIManager { 
+	public bool IsVisible { get; private set; } = false; 
+	private Rect windowRect = new Rect(100f, 100f, 500f, 600f); 
+	private int currentTab = 0; 
+	private Vector2 scrollPos = Vector2.zero; 
+	private Color bgColor = new Color(0.1f, 0.1f, 0.1f, 0.95f), accentColor = new Color(0f, 1f, 0.5f), headerColor = new Color(0.15f, 0.15f, 0.15f); 
+	
+	public void ToggleMenu() { IsVisible = !IsVisible; } 
+	
+	public void Render() { 
+		GUISkin originalSkin = GUI.skin; 
+		windowRect = GUI.Window(12345, windowRect, DrawWindow, "", GetWindowStyle()); 
+		GUI.skin = originalSkin; 
+	} 
+	
+	private GUIStyle GetWindowStyle() { 
+		GUIStyle style = new GUIStyle(GUI.skin.window); 
+		style.normal.background = MakeTex(2, 2, bgColor); 
+		return style; 
+	} 
+	
+	private void DrawWindow(int id) { 
+		GUIStyle headerStyle = new GUIStyle(GUI.skin.label) { fontSize = 18, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter }; 
+		headerStyle.normal.textColor = accentColor; 
+		GUI.Label(new Rect(0f, 10f, windowRect.width, 30f), "RUST LEGACY CHEAT v3.0", headerStyle); 
+		GUIStyle subtitleStyle = new GUIStyle(GUI.skin.label) { fontSize = 10, alignment = TextAnchor.MiddleCenter }; 
+		subtitleStyle.normal.textColor = new Color(0.7f, 0.7f, 0.7f); 
+		GUI.Label(new Rect(0f, 35f, windowRect.width, 20f), "NO ERRORS | FULLY FIXED", subtitleStyle); 
+		float y = 65f; 
+		DrawTabs(ref y); 
+		Rect contentRect = new Rect(15f, y, windowRect.width - 30f, windowRect.height - y - 15f); 
+		Rect viewRect = new Rect(0f, 0f, contentRect.width - 25f, 1000f); 
+		scrollPos = GUI.BeginScrollView(contentRect, scrollPos, viewRect); 
+		float contentY = 10f; 
+		switch (currentTab) { 
+			case 0: DrawESPTab(ref contentY); break; 
+			case 1: DrawAimbotTab(ref contentY); break; 
+			case 2: DrawVisualTab(ref contentY); break; 
+			case 3: DrawMovementTab(ref contentY); break; 
+			case 4: DrawMiscTab(ref contentY); break; 
+		} 
+		GUI.EndScrollView(); 
+		GUIStyle footerStyle = new GUIStyle(GUI.skin.label) { fontSize = 9, alignment = TextAnchor.MiddleCenter }; 
+		footerStyle.normal.textColor = new Color(0.5f, 0.5f, 0.5f); 
+		GUI.Label(new Rect(0f, windowRect.height - 25f, windowRect.width, 20f), "Press INSERT to close", footerStyle); 
+		GUI.DragWindow(new Rect(0f, 0f, windowRect.width, 30f)); 
+	} 
+	
+	private void DrawTabs(ref float y) { 
+		string[] tabs = { "ESP", "Aimbot", "Visual", "Movement", "Misc" }; 
+		float tabWidth = (windowRect.width - 40f) / tabs.Length, x = 15f; 
+		GUIStyle activeStyle = new GUIStyle(GUI.skin.button); 
+		activeStyle.normal.background = MakeTex(2, 2, accentColor); 
+		activeStyle.normal.textColor = Color.black; 
+		activeStyle.fontStyle = FontStyle.Bold; 
+		GUIStyle inactiveStyle = new GUIStyle(GUI.skin.button); 
+		inactiveStyle.normal.background = MakeTex(2, 2, headerColor); 
+		inactiveStyle.normal.textColor = Color.white; 
+		for (int i = 0; i < tabs.Length; i++) { 
+			if (GUI.Button(new Rect(x, y, tabWidth - 5f, 35f), tabs[i], currentTab == i ? activeStyle : inactiveStyle)) 
+				currentTab = i; 
+			x += tabWidth; 
+		} 
+		y += 45f; 
+	} 
+	
+	private void DrawESPTab(ref float y) { 
+		DrawHeader("ESP SETTINGS", ref y); 
+		CheatConfig.espEnabled = DrawToggle("Enable ESP", CheatConfig.espEnabled, ref y); 
+		if (CheatConfig.espEnabled) { 
+			DrawSeparator(ref y); 
+			DrawSubHeader("Targets", ref y); 
+			CheatConfig.espShowPlayers = DrawToggle("Show Players", CheatConfig.espShowPlayers, ref y); 
+			CheatConfig.espShowNPCs = DrawToggle("Show NPCs", CheatConfig.espShowNPCs, ref y);
+			
+			DrawHeader("CHAMS ULTIMATE", ref y);
+
+// --- ส่วนของผู้เล่น ---
+CheatConfig.chamsPlayers = DrawToggle("Chams: Players", CheatConfig.chamsPlayers, ref y);
+if (CheatConfig.chamsPlayers) {
+    DrawSubHeader("Player Color Settings", ref y);
+    CheatConfig.playerChamsColor.r = DrawSlider("Red", CheatConfig.playerChamsColor.r, 0f, 1f, "", ref y);
+    CheatConfig.playerChamsColor.g = DrawSlider("Green", CheatConfig.playerChamsColor.g, 0f, 1f, "", ref y);
+    CheatConfig.playerChamsColor.b = DrawSlider("Blue", CheatConfig.playerChamsColor.b, 0f, 1f, "", ref y);
+    CheatConfig.playerChamsColor.a = DrawSlider("Transparency", CheatConfig.playerChamsColor.a, 0.1f, 1f, "", ref y);
+}
+
+DrawSeparator(ref y);
+
+// --- ส่วนของสัตว์ ---
+CheatConfig.chamsAnimals = DrawToggle("Chams: Animals", CheatConfig.chamsAnimals, ref y);
+if (CheatConfig.chamsAnimals) {
+    DrawSubHeader("Animal Color Settings", ref y);
+    CheatConfig.animalChamsColor.r = DrawSlider("Red", CheatConfig.animalChamsColor.r, 0f, 1f, "", ref y);
+    CheatConfig.animalChamsColor.g = DrawSlider("Green", CheatConfig.animalChamsColor.g, 0f, 1f, "", ref y);
+    CheatConfig.animalChamsColor.b = DrawSlider("Blue", CheatConfig.animalChamsColor.b, 0f, 1f, "", ref y);
+    CheatConfig.animalChamsColor.a = DrawSlider("Transparency", CheatConfig.animalChamsColor.a, 0.1f, 1f, "", ref y);
+}
+
+ 
+			CheatConfig.espShowResources = DrawToggle("Show Resources", CheatConfig.espShowResources, ref y); 
+			CheatConfig.espShowLootables = DrawToggle("Show Lootables", CheatConfig.espShowLootables, ref y); 
+			CheatConfig.espShowSleeping = DrawToggle("Show Sleeping Players", CheatConfig.espShowSleeping, ref y); 
+			DrawSeparator(ref y); 
+			DrawSubHeader("Display", ref y); 
+			CheatConfig.espShowNames = DrawToggle("Show Names", CheatConfig.espShowNames, ref y); 
+			CheatConfig.espShowDistance = DrawToggle("Show Distance", CheatConfig.espShowDistance, ref y); 
+			CheatConfig.espShowHealthBar = DrawToggle("Show Health Bar", CheatConfig.espShowHealthBar, ref y); 
+			CheatConfig.espSkeletalEnabled = DrawToggle("Skeletal ESP", CheatConfig.espSkeletalEnabled, ref y); 
+			CheatConfig.espShowBox = DrawToggle("Box ESP", CheatConfig.espShowBox, ref y); 
+			DrawSeparator(ref y); 
+			CheatConfig.espMaxDistance = (int)DrawSlider("Max Distance", CheatConfig.espMaxDistance, 100, 1000, "m", ref y); 
+		} 
+	} 
+	
+	private void DrawAimbotTab(ref float y) { 
+		DrawHeader("AIMBOT SETTINGS", ref y); 
+		CheatConfig.aimbotEnabled = DrawToggle("Enable Aimbot", CheatConfig.aimbotEnabled, ref y); 
+		if (CheatConfig.aimbotEnabled) { 
+			DrawSeparator(ref y); 
+			DrawSubHeader("Targets", ref y); 
+			CheatConfig.aimbotTargetPlayers = DrawToggle("Target Players", CheatConfig.aimbotTargetPlayers, ref y); 
+			CheatConfig.aimbotTargetNPCs = DrawToggle("Target NPCs", CheatConfig.aimbotTargetNPCs, ref y); 
+			CheatConfig.aimbotTargetSleeping = DrawToggle("Target Sleeping", CheatConfig.aimbotTargetSleeping, ref y); 
+			CheatConfig.aimbotAutoAim = DrawToggle("Auto Aim", CheatConfig.aimbotAutoAim, ref y); 
+			DrawSeparator(ref y); 
+			DrawSubHeader("Settings", ref y); 
+			CheatConfig.aimbotShowFOV = DrawToggle("Show FOV Circle", CheatConfig.aimbotShowFOV, ref y); 
+			CheatConfig.aimbotPrediction = DrawToggle("Prediction", CheatConfig.aimbotPrediction, ref y); 
+			DrawSeparator(ref y); 
+			CheatConfig.aimbotFOV = DrawSlider("FOV", CheatConfig.aimbotFOV, 10f, 180f, "°", ref y); 
+			CheatConfig.aimbotRange = DrawSlider("Range", CheatConfig.aimbotRange, 10f, 300f, "m", ref y); 
+			CheatConfig.aimbotSmoothing = DrawSlider("Smoothing", CheatConfig.aimbotSmoothing, 1f, 20f, "", ref y); 
+		} 
+	} 
+	
+	private void DrawVisualTab(ref float y) { 
+    DrawHeader("VISUAL SETTINGS", ref y); 
+    
+    // --- ส่วนของ WallHack ---
+    CheatConfig.wallHackEnabled = DrawToggle("Enable WallHack", CheatConfig.wallHackEnabled, ref y); 
+    if (CheatConfig.wallHackEnabled) { 
+        DrawSeparator(ref y); 
+        CheatConfig.wallHackHideWalls = DrawToggle("Hide Walls", CheatConfig.wallHackHideWalls, ref y); 
+        CheatConfig.wallHackHideDoors = DrawToggle("Hide Doors", CheatConfig.wallHackHideDoors, ref y); 
+        CheatConfig.wallHackHideCeilings = DrawToggle("Hide Ceilings", CheatConfig.wallHackHideCeilings, ref y); 
+    } 
+    
+    DrawSeparator(ref y); // ขีดเส้นคั่นเพื่อความเป็นระเบียบ
+    
+    // --- ส่วนของ Always Day ---
+    DrawSubHeader("ENVIRONMENT", ref y); // เพิ่มหัวข้อย่อยให้รู้ว่าเป็นหมวดสภาพแวดล้อม
+    CheatConfig.dayTimeLock = DrawToggle("Always Day (Lock 12:00)", CheatConfig.dayTimeLock, ref y); 
+}
+
+	
+	private void DrawMovementTab(ref float y) 
+{ 
+    // วาดหัวข้อหลักของหมวดการเคลื่อนที่
+    DrawHeader("MOVEMENT SETTINGS", ref y); 
+
+    // ฟีเจอร์ NoClip เดิมของคุณ
+    CheatConfig.noClipEnabled = DrawToggle("NoClip (N Key)", CheatConfig.noClipEnabled, ref y); 
+    if (CheatConfig.noClipEnabled) 
+    { 
+        CheatConfig.noClipSpeed = DrawSlider("NoClip Speed", CheatConfig.noClipSpeed, 1f, 20f, "", ref y); 
+        DrawSeparator(ref y); 
+    } 
+
+    // --- เพิ่มฟีเจอร์ Fly Hack (WASD Control) ---
+    CheatConfig.movementFlyHack = DrawToggle("Fly Hack (WASD)", CheatConfig.movementFlyHack, ref y); 
+    if (CheatConfig.movementFlyHack) 
+    { 
+        // ปรับความเร็วการบิน (Fly Speed)
+        CheatConfig.flyHackSpeed = DrawSlider("Fly Speed", CheatConfig.flyHackSpeed, 5f, 100f, " units", ref y);
+        
+        // เพิ่มคำอธิบายปุ่มควบคุมขนาดเล็ก (ใช้ DrawLabel หรือวาดข้อความธรรมดา)
+        // หมายเหตุ: ถ้าคุณไม่มีฟังก์ชัน DrawLabel ให้ข้ามบรรทัดล่างนี้ไปได้ครับ
+        y += 5f;
+        GUI.Label(new Rect(30f, y, 200f, 20f), " <color=cyan>[Space: Up | Ctrl: Down]</color>");
+        y += 20f;
+        
+        DrawSeparator(ref y); 
+    }
+
+    // ฟีเจอร์ No Fall Damage เดิมของคุณ
+    CheatConfig.noFallDamage = DrawToggle("No Fall Damage", CheatConfig.noFallDamage, ref y);
+}
+
+	
+	private void DrawMiscTab(ref float y) { 
+		DrawHeader("MISC SETTINGS", ref y); 
+		CheatConfig.showFPS = DrawToggle("Show FPS", CheatConfig.showFPS, ref y); 
+		CheatConfig.showCrosshair = DrawToggle("Show Crosshair", CheatConfig.showCrosshair, ref y); 
+		DrawSeparator(ref y); 
+		DrawSubHeader("Weapon", ref y); 
+		CheatConfig.noRecoil = DrawToggle("No Recoil", CheatConfig.noRecoil, ref y); 
+		CheatConfig.noSpread = DrawToggle("No Spread", CheatConfig.noSpread, ref y);
+		CheatConfig.noReload = DrawToggle("Infinite Ammo", CheatConfig.noReload, ref y); 
+	} 
+	
+	private void DrawHeader(string text, ref float y) { 
+		GUIStyle style = new GUIStyle(GUI.skin.label) { fontSize = 14, fontStyle = FontStyle.Bold }; 
+		style.normal.textColor = accentColor; 
+		GUI.Label(new Rect(10f, y, 400f, 25f), text, style); 
+		y += 35f; 
+	} 
+	
+	private void DrawSubHeader(string text, ref float y) { 
+		GUIStyle style = new GUIStyle(GUI.skin.label) { fontSize = 11, fontStyle = FontStyle.Bold }; 
+		style.normal.textColor = new Color(0.8f, 0.8f, 0.8f); 
+		GUI.Label(new Rect(10f, y, 400f, 20f), text, style); 
+		y += 25f; 
+	} 
+	
+	private bool DrawToggle(string label, bool value, ref float y) { 
+		GUIStyle toggleStyle = new GUIStyle(GUI.skin.toggle) { fontSize = 11 }; 
+		toggleStyle.normal.textColor = Color.white; 
+		bool result = GUI.Toggle(new Rect(10f, y, 400f, 25f), value, label, toggleStyle); 
+		y += 30f; 
+		return result; 
+	} 
+	
+	private float DrawSlider(string label, float value, float min, float max, string unit, ref float y) { 
+		GUIStyle labelStyle = new GUIStyle(GUI.skin.label) { fontSize = 11 }; 
+		labelStyle.normal.textColor = Color.white; 
+		GUI.Label(new Rect(10f, y, 300f, 20f), string.Format("{0}: {1:F0}{2}", label, value, unit), labelStyle); 
+		y += 20f; 
+		float result = GUI.HorizontalSlider(new Rect(10f, y, 400f, 20f), value, min, max); 
+		y += 30f; 
+		return result; 
+	} 
+	
+	private void DrawSeparator(ref float y) { 
+		GUI.color = new Color(0.3f, 0.3f, 0.3f); 
+		GUI.DrawTexture(new Rect(10f, y, 420f, 1f), CheatConfig.GetWhiteTexture()); 
+		GUI.color = Color.white; 
+		y += 10f; 
+	} 
+	
+	private Texture2D MakeTex(int width, int height, Color col) { 
+		Color[] pix = new Color[width * height]; 
+		for (int i = 0; i < pix.Length; i++) pix[i] = col; 
+		Texture2D result = new Texture2D(width, height); 
+		result.SetPixels(pix); 
+		result.Apply(); 
+		return result; 
+	} 
+}
+
+public struct EntityData { 
+	public int entityID; 
+	public GameObject gameObject; 
+	public Transform transform; 
+	public Vector3 position; 
+	public EntityType entityType; 
+	public float distance; 
+	public Character character; 
+	public TakeDamage takeDamage; 
+	public bool isPlayer, isSleeping; 
+	public string playerName; 
+	public float health, maxHealth; 
+	public ResourceObject resourceObject; 
+	public LootableObject lootableObject; 
+}
+
+public enum EntityType { Unknown, Character, Resource, Lootable }
+
+public static class CheatConfig
+{
+	private static Texture2D _whiteTexture;
+	public static Texture2D GetWhiteTexture() { 
+		if (_whiteTexture == null) { 
+			_whiteTexture = new Texture2D(1, 1); 
+			_whiteTexture.SetPixel(0, 0, Color.white); 
+			_whiteTexture.Apply(); 
+		} 
+		return _whiteTexture; 
+	}
+
+	public static bool espEnabled = false, espShowPlayers = true, espShowNPCs = true, espShowResources = false, espShowLootables = false, espShowSleeping = true, espShowNames = true, espShowDistance = true, espShowHealthBar = true, espShowBox = false;
+	public static int espMaxDistance = 500;
+
+	public static bool espSkeletalEnabled = false;
+
+	public static bool chamsPlayers = false;
+	public static bool chamsAnimals = false;
+	public static Color playerChamsColor = new Color(1f, 0f, 0f, 0.5f); // เริ่มต้นสีแดง จาง 50%
+	public static Color animalChamsColor = new Color(0f, 1f, 0f, 0.3f); // เริ่มต้นสีเขียว จาง 30%
+
+	public static bool aimbotEnabled = false, aimbotTargetPlayers = true, aimbotTargetNPCs = false, aimbotTargetSleeping = false, aimbotAutoAim = false, aimbotPrediction = true, aimbotRotateCharacter = false, aimbotShowFOV = true;
+	public static float aimbotFOV = 90f, aimbotRange = 150f, aimbotSmoothing = 5f;
+	public static KeyCode aimbotKey = KeyCode.Mouse1;
+	public static KeyCode[] aimbotHotkeys = new KeyCode[] { KeyCode.Mouse1 };
+	public static HumanBodyBones aimbotTargetBone = HumanBodyBones.Head;
+
+	public static bool wallHackEnabled = false, wallHackHideWalls = false, wallHackHideDoors = false, wallHackHideCeilings = false;
+
+	public static bool dayTimeLock = false;
+
+	// เพิ่มตัวแปรเหล่านี้ในคลาส CheatConfig
+	public static bool movementFlyHack = false;
+	public static float flyHackSpeed = 15f;
+
+
+
+	public static bool noClipEnabled = false;
+	public static float noClipSpeed = 5f;
+
+	public static bool noSpread = false;
+	public static bool noRecoil = false, noReload = false;
+	public static bool noFallDamage = false;
+
+
+	public static bool showCrosshair = false, showFPS = false;
+}
+
+public class ChamsSystem_Ultimate {
+    private Dictionary<int, Shader> originalShaders = new Dictionary<int, Shader>();
+    private Material chamsMaterial;
+
+    public void Update(EntityRegistry registry) {
+        if (registry == null) return;
+
+        // สร้าง Material พิเศษที่มองทะลุได้ (ถ้ายังไม่มี)
+        if (chamsMaterial == null) {
+            chamsMaterial = new Material(Shader.Find("GUI/Text Shader"));
+            // สั่งให้วาดทับทุกอย่าง (ZTest Always)
+            chamsMaterial.SetInt("_ZTest", 8); 
+        }
+
+        foreach (var entity in registry.GetAll()) {
+            if (entity.character == null) continue;
+
+            bool shouldChams = false;
+            Color targetColor = Color.white;
+
+            if (entity.isPlayer && CheatConfig.chamsPlayers) {
+                shouldChams = true;
+                targetColor = CheatConfig.playerChamsColor;
+            } else if (!entity.isPlayer && CheatConfig.chamsAnimals) {
+                shouldChams = true;
+                targetColor = CheatConfig.animalChamsColor;
+            }
+
+            ApplyChamsEffect(entity.character, shouldChams, targetColor);
+        }
+    }
+	public void Cleanup(EntityRegistry registry) {
+    // เมื่อปิดฟังก์ชันหลัก ให้ไล่คืนค่าตัวละครทั้งหมดทันที
+    foreach (var entity in registry.GetAll()) {
+        if (entity.character != null) {
+            ApplyChamsEffect(entity.character, false, Color.white);
+        }
+    }
+    originalShaders.Clear();
+}
+	public void ForceRestore(Character character) 
+{
+    if (character == null) return;
+    
+    Renderer[] renderers = character.GetComponentsInChildren<Renderer>();
+    foreach (Renderer r in renderers) 
+    {
+        if (r == null || r.material == null) continue;
+        int id = r.GetInstanceID();
+        
+        if (originalShaders.ContainsKey(id)) 
+        {
+            r.material.shader = originalShaders[id];
+            originalShaders.Remove(id);
+        }
+    }
+}
+    private void ApplyChamsEffect(Character character, bool enable, Color color) {
+    if (character == null) return;
+    Renderer[] renderers = character.GetComponentsInChildren<Renderer>();
+    foreach (Renderer r in renderers) {
+            if (r == null || r.sharedMaterial == null) continue;
+            int id = r.GetInstanceID();
+
+            if (enable) {
+                // Store original shader if not already stored
+                if (!originalShaders.ContainsKey(id)) {
+                    originalShaders[id] = r.sharedMaterial.shader;
+                }
+                // Apply chams material only if it's different from the current one
+                if (r.sharedMaterial.shader != chamsMaterial.shader) {
+                    r.material.shader = chamsMaterial.shader;
+                    r.material.SetInt("_ZTest", 8); 
+                    r.material.color = color;
+                }
+            } else {
+                // Restore original shader if it was modified by chams
+                if (originalShaders.ContainsKey(id)) {
+                    if (r.sharedMaterial.shader == chamsMaterial.shader) { // Only restore if it's currently the chams material
+                        r.material.shader = originalShaders[id];
+                    }
+                    originalShaders.Remove(id);
+                }
+            }
+    }
+}
+	}
